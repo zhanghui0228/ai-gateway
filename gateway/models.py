@@ -12,6 +12,17 @@ def utcnow():
     return datetime.now(timezone.utc)
 
 
+def iso_utc(dt):
+    """把 datetime 安全地序列化为带 Z 的 UTC ISO 字符串。
+    SQLite 读取后 tzinfo 会丢失(naive),此时按 UTC 处理并追加 Z,
+    让前端 new Date() 能正确解析为 UTC 再转本地时区。"""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
 class JSONText(db.TypeDecorator):
     """SQLite 下用 TEXT 存 JSON"""
     impl = db.Text
@@ -132,7 +143,7 @@ class Channel(db.Model):
             "probe_mode": self.probe_mode or "models",
             "user_agent": self.user_agent or "", "extra_headers": self.extra_headers or {},
             "custom_fields": self.custom_fields or {},
-            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "created_at": iso_utc(self.created_at),
         }
         if mask_key and d["api_key"]:
             keys = [k.strip() for k in d["api_key"].split(",") if k.strip()]
@@ -174,9 +185,9 @@ class ApiKey(db.Model):
             "key": (self.key[:10] + "***" + self.key[-4:]) if mask else self.key,
             "quota_tokens": self.quota_tokens, "used_tokens": self.used_tokens,
             "allowed_models": self.allowed_models or [],
-            "expires_at": self.expires_at.isoformat() if self.expires_at else None,
+            "expires_at": iso_utc(self.expires_at),
             "enabled": self.enabled,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "created_at": iso_utc(self.created_at),
         }
 
 
@@ -224,7 +235,7 @@ class CallLog(db.Model):
     def summary(self):
         return {
             "id": self.id,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "created_at": iso_utc(self.created_at),
             "request_id": self.request_id, "key_id": self.key_id, "key_name": self.key_name,
             "channel_id": self.channel_id, "channel_name": self.channel_name,
             "endpoint": self.endpoint, "model_requested": self.model_requested,
@@ -271,7 +282,7 @@ class UsageLog(db.Model):
 
     def to_dict(self):
         return {
-            "id": self.id, "created_at": self.created_at.isoformat() if self.created_at else None,
+            "id": self.id, "created_at": iso_utc(self.created_at),
             "key_id": self.key_id, "key_name": self.key_name,
             "channel_id": self.channel_id, "channel_name": self.channel_name,
             "model": self.model, "prompt_tokens": self.prompt_tokens,
