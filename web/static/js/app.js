@@ -15,6 +15,7 @@ async function switchPage(name) {
   $$('.nav-item').forEach(i => i.classList.toggle('active', i.dataset.page === name));
   if (refreshTimer) clearInterval(refreshTimer);
   disposeCharts();
+  if (name === 'settings') Pages.settings.subPage = 'basic';
   await Pages[name].render($('#main'));
   // 总览/统计/日志页自动刷新
   if (name === 'dashboard' || name === 'usage' || name === 'logs') {

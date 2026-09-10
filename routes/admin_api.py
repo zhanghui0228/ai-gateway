@@ -6,8 +6,8 @@ import config
 from gateway import balancer, events, pricing, stats
 from gateway.auth import admin_required, default_settings
 from gateway.db import db
-from gateway.models import Admin, ApiKey, Channel, ModelPrice, Setting, UsageLog
-from gateway.presets import PRESETS, preset_list
+from gateway.models import Admin, ApiKey, Channel, ModelPrice, Preset, Setting, UsageLog
+from gateway.presets import PRESETS, preset_list, seed_presets
 from gateway.proxy import drop_channel
 from gateway.adapters.registry import get_adapter
 
@@ -55,11 +55,97 @@ def change_password():
     return jsonify({"ok": True})
 
 
-# ---------- 预设 ----------
+# ---------- 预设(数据库 CRUD) ----------
 @admin_bp.route("/presets", methods=["GET"])
 @admin_required
 def presets():
     return jsonify(preset_list())
+
+
+@admin_bp.route("/presets", methods=["POST"])
+@admin_required
+def create_preset():
+    data = request.get_json(silent=True) or {}
+    if not data.get("id") or not data.get("name"):
+        return jsonify({"error": "id 和 name 必填"}), 400
+    if db.session.get(Preset, data["id"]):
+        return jsonify({"error": "该 id 已存在"}), 409
+    pr = Preset(
+        id=data["id"].strip(), name=data["name"].strip(),
+        adapter=data.get("adapter", "openai_compat"),
+        base_url=data.get("base_url", ""),
+        models=data.get("models") or [],
+        prices=data.get("prices") or {},
+        probe_mode=data.get("probe_mode", "models"),
+        user_agent=data.get("user_agent", ""),
+        needs_proxy=bool(data.get("needs_proxy")),
+        local=bool(data.get("local")),
+        note=data.get("note", ""),
+        key_url=data.get("key_url", ""),
+        custom_1_label=data.get("custom_1_label", ""),
+        custom_1_key=data.get("custom_1_key", ""),
+        custom_1_placeholder=data.get("custom_1_placeholder", ""),
+        custom_2_label=data.get("custom_2_label", ""),
+        custom_2_key=data.get("custom_2_key", ""),
+        custom_2_placeholder=data.get("custom_2_placeholder", ""),
+        is_built_in=False,
+        sort_order=int(data.get("sort_order", 0)),
+    )
+    db.session.add(pr)
+    db.session.commit()
+    return jsonify(pr.to_dict())
+
+
+@admin_bp.route("/presets/<pid>", methods=["PUT"])
+@admin_required
+def update_preset(pid):
+    pr = db.session.get(Preset, pid)
+    if not pr:
+        return jsonify({"error": "预设不存在"}), 404
+    data = request.get_json(silent=True) or {}
+    for field in ("name", "adapter", "base_url", "probe_mode", "user_agent",
+                  "note", "key_url",
+                  "custom_1_label", "custom_1_key", "custom_1_placeholder",
+                  "custom_2_label", "custom_2_key", "custom_2_placeholder"):
+        if field in data:
+            setattr(pr, field, data[field] or "")
+    if "models" in data:
+        pr.models = data["models"] or []
+    if "prices" in data:
+        pr.prices = data["prices"] or {}
+    if "needs_proxy" in data:
+        pr.needs_proxy = bool(data["needs_proxy"])
+    if "local" in data:
+        pr.local = bool(data["local"])
+    if "sort_order" in data:
+        pr.sort_order = int(data["sort_order"] or 0)
+    db.session.commit()
+    return jsonify(pr.to_dict())
+
+
+@admin_bp.route("/presets/<pid>", methods=["DELETE"])
+@admin_required
+def delete_preset(pid):
+    pr = db.session.get(Preset, pid)
+    if not pr:
+        return jsonify({"error": "预设不存在"}), 404
+    if pr.is_built_in:
+        return jsonify({"error": "内置预设不可删除,可改为停用或编辑"}), 400
+    # 检查是否有渠道正在引用该 preset
+    ref = Channel.query.filter_by(preset=pid).first()
+    if ref:
+        return jsonify({"error": f"已有渠道「{ref.name}」引用此预设,请先修改该渠道"}), 400
+    db.session.delete(pr)
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@admin_bp.route("/presets/seed", methods=["POST"])
+@admin_required
+def reseed_presets():
+    """重新种子内置预设(仅填充缺失的,不覆盖已存在的)"""
+    n = seed_presets()
+    return jsonify({"ok": True, "seeded": n})
 
 
 # ---------- 渠道 ----------
@@ -87,6 +173,7 @@ def create_channel():
         probe_mode=data.get("probe_mode") or "models",
         user_agent=data.get("user_agent", ""),
         extra_headers=data.get("extra_headers") or {},
+        custom_fields=data.get("custom_fields") or {},
         azure_api_version=data.get("azure_api_version", "2024-10-21"))
     db.session.add(ch)
     db.session.commit()
@@ -111,6 +198,8 @@ def update_channel(cid):
             setattr(ch, field, val or "" if field != "name" else val)
     if "extra_headers" in data:
         ch.extra_headers = data["extra_headers"] or {}
+    if "custom_fields" in data:
+        ch.custom_fields = data["custom_fields"] or {}
     for field in ("models", "model_mapping", "pricing_override"):
         if field in data:
             setattr(ch, field, data[field] or [])
@@ -303,10 +392,11 @@ def delete_price(model):
 def import_preset_prices():
     """把预设厂商参考单价导入全局价目表(仅填充缺失项)"""
     imported = 0
-    for p in PRESETS.values():
-        for model, (pi, po) in (p.get("prices") or {}).items():
+    for pr in Preset.query.all():
+        for model, price in (pr.prices or {}).items():
             if not db.session.get(ModelPrice, model):
-                db.session.add(ModelPrice(model=model, input_price=pi, output_price=po))
+                if isinstance(price, (list, tuple)) and len(price) >= 2:
+                    db.session.add(ModelPrice(model=model, input_price=price[0], output_price=price[1]))
                 imported += 1
     db.session.commit()
     pricing.refresh_cache()

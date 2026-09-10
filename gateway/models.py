@@ -89,6 +89,8 @@ class Channel(db.Model):
     user_agent = db.Column(db.String(256), default="")
     extra_headers = db.Column(JSONText, default=dict)          # 额外请求头 {"X-Foo":"bar"}
 
+    # 预设自定义字段值(如 organization_id / project_id 等,由预设定义)
+    custom_fields = db.Column(JSONText, default=dict)
     # 额外的 azure 参数
     azure_api_version = db.Column(db.String(32), default="2024-10-21")
 
@@ -129,6 +131,7 @@ class Channel(db.Model):
             "probe_latency": self.probe_latency, "probe_error": self.probe_error,
             "probe_mode": self.probe_mode or "models",
             "user_agent": self.user_agent or "", "extra_headers": self.extra_headers or {},
+            "custom_fields": self.custom_fields or {},
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
         if mask_key and d["api_key"]:
@@ -279,4 +282,50 @@ class UsageLog(db.Model):
             "status_code": self.status_code, "success": self.success,
             "is_stream": self.is_stream, "estimated": self.estimated,
             "retries": self.retries, "error": self.error,
+        }
+
+
+class Preset(db.Model):
+    """预设厂商(可动态管理,运行时存数据库,首次启动从 presets.py 种子写入)"""
+    __tablename__ = "presets"
+    id = db.Column(db.String(64), primary_key=True)            # 如 openai / deepseek / agnes
+    name = db.Column(db.String(128), nullable=False)            # 显示名
+    adapter = db.Column(db.String(32), nullable=False, default="openai_compat")
+    base_url = db.Column(db.String(512), default="")
+    models = db.Column(JSONText, default=list)                  # 常用模型列表
+    prices = db.Column(JSONText, default=dict)                  # 参考单价 {"model": (输入,输出)}
+    probe_mode = db.Column(db.String(16), default="models")     # models / chat / off
+    user_agent = db.Column(db.String(256), default="")          # 部分站点需伪装 UA
+    needs_proxy = db.Column(db.Boolean, default=False)          # 是否需代理访问
+    local = db.Column(db.Boolean, default=False)                # 本地服务(如 Ollama)
+    note = db.Column(db.String(512), default="")                # 备注说明
+    key_url = db.Column(db.String(512), default="")             # 快速获取 API Key 的链接
+    # 两个自定义字段定义(如 Organization ID / Project ID / Tenant 等)
+    custom_1_label = db.Column(db.String(64), default="")      # 字段1名称
+    custom_1_key = db.Column(db.String(64), default="")        # 字段1键
+    custom_1_placeholder = db.Column(db.String(128), default="")
+    custom_2_label = db.Column(db.String(64), default="")
+    custom_2_key = db.Column(db.String(64), default="")
+    custom_2_placeholder = db.Column(db.String(128), default="")
+    is_built_in = db.Column(db.Boolean, default=False)          # 内置预设(种子来源,可编辑不可删除)
+    sort_order = db.Column(db.Integer, default=0)               # 排序权重
+    created_at = db.Column(db.DateTime, default=utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id, "name": self.name, "adapter": self.adapter,
+            "base_url": self.base_url, "models": self.models or [],
+            "prices": self.prices or {},
+            "probe_mode": self.probe_mode or "models",
+            "user_agent": self.user_agent or "",
+            "needs_proxy": self.needs_proxy, "local": self.local,
+            "note": self.note or "", "key_url": self.key_url or "",
+            "custom_1_label": self.custom_1_label or "",
+            "custom_1_key": self.custom_1_key or "",
+            "custom_1_placeholder": self.custom_1_placeholder or "",
+            "custom_2_label": self.custom_2_label or "",
+            "custom_2_key": self.custom_2_key or "",
+            "custom_2_placeholder": self.custom_2_placeholder or "",
+            "is_built_in": self.is_built_in,
+            "sort_order": self.sort_order or 0,
         }

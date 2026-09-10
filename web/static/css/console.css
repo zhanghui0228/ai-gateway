@@ -47,6 +47,8 @@
   border-color: var(--border-hi); box-shadow: inset 3px 0 0 var(--cyan);
 }
 .nav-item .ico { width: 18px; text-align: center; font-size: 15px; }
+.sub-nav { background: rgba(8,14,30,0.6); border: 1px solid var(--border); border-radius: 10px; padding: 4px; }
+.sub-nav-btn.active { color: var(--cyan); background: linear-gradient(90deg, rgba(0,229,255,0.18), rgba(0,229,255,0.05)); border-color: var(--border-hi); }
 .side-foot { padding: 14px 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
 .side-foot .who { flex: 1; font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; }
 

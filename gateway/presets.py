@@ -1,6 +1,7 @@
 """内置预设厂商库:base_url / 适配器 / 常用模型 / 参考单价(元/百万token)
 
 价格仅为参考,请以厂商官网为准,控制台可改。
+首次启动时种子写入 presets 表,之后在控制台「系统设置 → 预设厂商」动态管理。
 """
 
 PRESETS = {
@@ -14,6 +15,10 @@ PRESETS = {
                    "o4-mini": (8.75, 35.0), "text-embedding-3-large": (0.55, 0.0),
                    "dall-e-3": (0.0, 0.0)},
         "needs_proxy": True,
+        "key_url": "https://platform.openai.com/api-keys",
+        "custom_1_label": "Organization ID",
+        "custom_1_key": "openai-organization",
+        "custom_1_placeholder": "org-...(可选,多组织时填写)",
     },
     "anthropic": {
         "name": "Anthropic Claude", "adapter": "anthropic",
@@ -22,6 +27,7 @@ PRESETS = {
         "prices": {"claude-sonnet-4-5": (21.0, 105.0), "claude-opus-4-1": (105.0, 525.0),
                    "claude-3-7-sonnet-latest": (21.0, 105.0), "claude-3-5-haiku-latest": (5.25, 26.25)},
         "needs_proxy": True,
+        "key_url": "https://console.anthropic.com/settings/keys",
     },
     "gemini": {
         "name": "Google Gemini", "adapter": "gemini",
@@ -30,6 +36,7 @@ PRESETS = {
         "prices": {"gemini-2.5-pro": (9.19, 36.75), "gemini-2.5-flash": (0.7, 2.8),
                    "gemini-2.0-flash": (0.7, 2.1), "text-embedding-004": (0.49, 0.0)},
         "needs_proxy": True,
+        "key_url": "https://aistudio.google.com/app/apikey",
     },
     "azure": {
         "name": "Azure OpenAI", "adapter": "azure",
@@ -37,12 +44,17 @@ PRESETS = {
         "models": ["gpt-4o", "gpt-4o-mini"],
         "prices": {"gpt-4o": (17.5, 70.0), "gpt-4o-mini": (1.05, 4.2)},
         "needs_proxy": True,
+        "key_url": "https://portal.azure.com",
+        "custom_1_label": "部署名(同模型名则留空)",
+        "custom_1_key": "azure-deployment",
+        "custom_1_placeholder": "如 gpt-4o(可选,默认与模型名相同)",
     },
     "deepseek": {
         "name": "DeepSeek", "adapter": "openai_compat",
         "base_url": "https://api.deepseek.com",
         "models": ["deepseek-chat", "deepseek-reasoner"],
         "prices": {"deepseek-chat": (2.0, 8.0), "deepseek-reasoner": (4.0, 16.0)},
+        "key_url": "https://platform.deepseek.com/api_keys",
     },
     "moonshot": {
         "name": "Moonshot Kimi", "adapter": "openai_compat",
@@ -50,12 +62,14 @@ PRESETS = {
         "models": ["kimi-k2-0905-preview", "moonshot-v1-8k", "moonshot-v1-32k"],
         "prices": {"kimi-k2-0905-preview": (4.0, 16.0), "moonshot-v1-8k": (8.4, 8.4),
                    "moonshot-v1-32k": (16.8, 16.8)},
+        "key_url": "https://platform.moonshot.cn/console/api-keys",
     },
     "qwen": {
         "name": "阿里通义千问", "adapter": "openai_compat",
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode",
         "models": ["qwen-max", "qwen-plus", "qwen-turbo", "text-embedding-v4"],
         "prices": {"qwen-max": (17.2, 68.4), "qwen-plus": (2.84, 11.36), "qwen-turbo": (1.68, 2.74)},
+        "key_url": "https://dashscope.console.aliyun.com/apiKey",
     },
     "zhipu": {
         "name": "智谱 GLM", "adapter": "openai_compat",
@@ -63,6 +77,7 @@ PRESETS = {
         "models": ["glm-4.7", "glm-4.6", "glm-4.5-air", "glm-4-flash"],
         "prices": {"glm-4.7": (2.3, 9.2), "glm-4.6": (2.3, 9.2), "glm-4.5-air": (0.5, 2.0),
                    "glm-4-flash": (0.1, 0.1)},
+        "key_url": "https://open.bigmodel.cn/usercenter/apikeys",
     },
     "openrouter": {
         "name": "OpenRouter", "adapter": "openai_compat",
@@ -71,6 +86,7 @@ PRESETS = {
                    "deepseek/deepseek-chat"],
         "prices": {},
         "needs_proxy": True,
+        "key_url": "https://openrouter.ai/keys",
     },
     "groq": {
         "name": "Groq", "adapter": "openai_compat",
@@ -78,6 +94,7 @@ PRESETS = {
         "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
         "prices": {"llama-3.3-70b-versatile": (4.4, 4.4), "llama-3.1-8b-instant": (0.35, 0.35)},
         "needs_proxy": True,
+        "key_url": "https://console.groq.com/keys",
     },
     "siliconflow": {
         "name": "SiliconFlow 硅基流动", "adapter": "openai_compat",
@@ -85,6 +102,7 @@ PRESETS = {
         "models": ["deepseek-ai/DeepSeek-V3", "Qwen/Qwen2.5-72B-Instruct",
                    "BAAI/bge-m3"],
         "prices": {"deepseek-ai/DeepSeek-V3": (2.0, 8.0), "Qwen/Qwen2.5-72B-Instruct": (4.13, 4.13)},
+        "key_url": "https://cloud.siliconflow.cn/account/ak",
     },
     "agentrouter": {
         "name": "AgentRouter 公益站", "adapter": "openai_compat",
@@ -120,11 +138,64 @@ PRESETS = {
 
 
 def preset_list():
+    """返回所有预设(供前端下拉与渠道表单使用)"""
+    from gateway.models import Preset
+    rows = Preset.query.order_by(Preset.sort_order.desc(), Preset.name).all()
+    if not rows:
+        # DB 尚未种子(理论上启动时已种子,兜底用内存数据)
+        return _memory_preset_list()
+    return [p.to_dict() for p in rows]
+
+
+def _memory_preset_list():
     return [
         {"id": pid, "name": p["name"], "adapter": p["adapter"], "base_url": p["base_url"],
          "models": p["models"], "prices": p.get("prices", {}),
          "probe_mode": p.get("probe_mode", "models"),
          "user_agent": p.get("user_agent", ""),
-         "needs_proxy": p.get("needs_proxy", False), "local": p.get("local", False)}
+         "needs_proxy": p.get("needs_proxy", False), "local": p.get("local", False),
+         "note": p.get("note", ""), "key_url": p.get("key_url", ""),
+         "custom_1_label": p.get("custom_1_label", ""),
+         "custom_1_key": p.get("custom_1_key", ""),
+         "custom_1_placeholder": p.get("custom_1_placeholder", ""),
+         "custom_2_label": p.get("custom_2_label", ""),
+         "custom_2_key": p.get("custom_2_key", ""),
+         "custom_2_placeholder": p.get("custom_2_placeholder", ""),
+         "is_built_in": True, "sort_order": 0}
         for pid, p in PRESETS.items()
     ]
+
+
+def seed_presets():
+    """首次启动:把内存预设种子写入 presets 表(仅空表时执行)"""
+    from gateway.models import Preset
+    if Preset.query.first():
+        return 0
+    n = 0
+    for pid, p in PRESETS.items():
+        pr = Preset(
+            id=pid, name=p["name"], adapter=p["adapter"],
+            base_url=p.get("base_url", ""),
+            models=p.get("models", []),
+            prices=p.get("prices", {}),
+            probe_mode=p.get("probe_mode", "models"),
+            user_agent=p.get("user_agent", ""),
+            needs_proxy=p.get("needs_proxy", False),
+            local=p.get("local", False),
+            note=p.get("note", ""),
+            key_url=p.get("key_url", ""),
+            custom_1_label=p.get("custom_1_label", ""),
+            custom_1_key=p.get("custom_1_key", ""),
+            custom_1_placeholder=p.get("custom_1_placeholder", ""),
+            custom_2_label=p.get("custom_2_label", ""),
+            custom_2_key=p.get("custom_2_key", ""),
+            custom_2_placeholder=p.get("custom_2_placeholder", ""),
+            is_built_in=True,
+            sort_order=100 if pid == "custom" else 0,
+        )
+        # custom 排最后
+        from gateway.db import db
+        db.session.add(pr)
+        n += 1
+    db.session.commit()
+    return n

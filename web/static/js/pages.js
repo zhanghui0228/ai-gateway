@@ -104,8 +104,7 @@ Pages.channels = {
         <div class="field"><label>渠道名称 *</label><input id="f-name" value="${esc(p.name)}"></div>
         <div class="field"><label>预设厂商</label>
           <select id="f-preset">${presets.map(x =>
-            `<option value="${x.id}" ${x.id === p.preset ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}
-            <option value="custom" ${p.preset === 'custom' ? 'selected' : ''}>自定义 (OpenAI 兼容)</option></select></div>
+            `<option value="${x.id}" ${x.id === p.preset ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>
       </div>
       <div class="form-row">
         <div class="field" style="flex:2"><label>Base URL *</label><input id="f-base" value="${esc(p.base_url)}" placeholder="https://api.deepseek.com"></div>
@@ -114,7 +113,10 @@ Pages.channels = {
             `<option ${a === p.adapter ? 'selected' : ''}>${a}</option>`).join('')}</select></div>
       </div>
       <div class="field"><label>API Key(多个用英文逗号分隔,自动轮询)</label>
-        <input id="f-key" value="${esc(p.api_key || '')}" placeholder="sk-...">
+        <div style="display:flex;gap:8px;align-items:center">
+          <input id="f-key" value="${esc(p.api_key || '')}" placeholder="sk-..." style="flex:1">
+          <a id="f-keylink" class="btn ghost" style="padding:4px 10px;font-size:12px;white-space:nowrap;display:none" target="_blank" rel="noopener">获取 Key →</a>
+        </div>
         ${keyMasked ? '<div class="hint">当前为掩码显示;留空保存则保持原 Key 不变,需更换请直接粘贴新 Key</div>' : ''}</div>
       <div class="field"><label>支持模型(逗号分隔,对外暴露的模型名)</label>
         <div style="display:flex;gap:8px">
@@ -154,13 +156,44 @@ Pages.channels = {
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
             <input type="checkbox" id="f-enabled" ${p.enabled ? 'checked' : ''}> 启用渠道</label></div>
       </div>
+      <div id="f-custom-fields" style="display:none">
+        <div class="dim" style="font-size:12px;margin-bottom:6px;color:var(--cyan)">预设自定义字段(可选,由预设厂商定义)</div>
+        <div id="f-custom-rows"></div>
+      </div>
       <div class="field"><label>备注</label><input id="f-note" value="${esc(p.note || '')}"></div>
     `, `
       <button class="btn ghost" onclick="closeModal()">取消</button>
       <button class="btn" id="btn-save-chan">保存</button>`);
-    // 预设联动
-    $('#f-preset').onchange = () => {
+    // 预设联动:填充基础信息 + 渲染自定义字段 + 获取 Key 链接
+    const applyPreset = () => {
       const pr = presets.find(x => x.id === $('#f-preset').value);
+      // 获取 Key 链接
+      const keylink = $('#f-keylink');
+      if (pr && pr.key_url) {
+        keylink.href = pr.key_url;
+        keylink.style.display = '';
+      } else {
+        keylink.style.display = 'none';
+      }
+      // 自定义字段
+      const wrap = $('#f-custom-fields'), rows = $('#f-custom-rows');
+      rows.innerHTML = '';
+      const cf = isEdit ? (p.custom_fields || {}) : {};
+      const hasCustom = pr && (pr.custom_1_key || pr.custom_2_key);
+      if (hasCustom) {
+        wrap.style.display = '';
+        [1, 2].forEach(n => {
+          const label = pr['custom_' + n + '_label'];
+          const key = pr['custom_' + n + '_key'];
+          const ph = pr['custom_' + n + '_placeholder'] || '';
+          if (!key) return;
+          rows.innerHTML += `<div class="field"><label>${esc(label || key)}</label>
+            <input id="f-custom-${key}" value="${esc(cf[key] || '')}" placeholder="${esc(ph)}"></div>`;
+        });
+      } else {
+        wrap.style.display = 'none';
+      }
+      // 新增态才自动填充基础信息
       if (pr && !isEdit) {
         $('#f-base').value = pr.base_url;
         $('#f-adapter').value = pr.adapter;
@@ -169,6 +202,8 @@ Pages.channels = {
         if (pr.user_agent) $('#f-ua').value = pr.user_agent;
       }
     };
+    $('#f-preset').onchange = applyPreset;
+    applyPreset();  // 初始渲染(编辑态也要显示自定义字段与链接)
     // 自动获取模型(L1 免费探测,直连上游模型列表端点,附带元数据)
     let fetchedMeta = [];
     $('#btn-fetch-models').onclick = async () => {
@@ -252,6 +287,15 @@ Pages.channels = {
       } catch (e) { hint.textContent = '失败: ' + e.message; hint.style.color = 'var(--red)'; }
     };
     $('#btn-save-chan').onclick = async () => {
+      // 收集预设自定义字段值
+      const customFields = {};
+      const pr = presets.find(x => x.id === $('#f-preset').value);
+      [1, 2].forEach(n => {
+        const key = pr && pr['custom_' + n + '_key'];
+        if (!key) return;
+        const el = $('#f-custom-' + key);
+        if (el && el.value.trim()) customFields[key] = el.value.trim();
+      });
       const body = {
         name: $('#f-name').value.trim(), preset: $('#f-preset').value,
         adapter: $('#f-adapter').value, base_url: $('#f-base').value.trim(),
@@ -263,6 +307,7 @@ Pages.channels = {
         probe_mode: $('#f-probemode').value,
         user_agent: $('#f-ua').value.trim(),
         extra_headers: $('#f-headers').value.trim() ? JSON.parse($('#f-headers').value) : {},
+        custom_fields: customFields,
         azure_api_version: $('#f-azver').value.trim(),
       };
       if (!body.name || !body.base_url) return toast('名称和 Base URL 必填', 'err');
@@ -734,9 +779,30 @@ Pages.logs = {
 
 /* ================= 系统设置 ================= */
 Pages.settings = {
+  subPage: 'basic',
   async render(main) {
     main.innerHTML = `
       <div class="page-head"><h2>系统设置</h2></div>
+      <div class="sub-nav" style="display:flex;gap:4px;margin-bottom:16px">
+        <button class="btn ghost sub-nav-btn ${this.subPage === 'basic' ? 'active' : ''}" data-sub="basic">基本设置</button>
+        <button class="btn ghost sub-nav-btn ${this.subPage === 'presets' ? 'active' : ''}" data-sub="presets">预设厂商</button>
+      </div>
+      <div id="settings-content"></div>`;
+    $$('.sub-nav-btn').forEach(b => b.onclick = () => {
+      this.subPage = b.dataset.sub;
+      $$('.sub-nav-btn').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      this.renderSub();
+    });
+    this.renderSub();
+  },
+  async renderSub() {
+    if (this.subPage === 'presets') await this.renderPresets();
+    else await this.renderBasic();
+  },
+  async renderBasic() {
+    const c = $('#settings-content');
+    c.innerHTML = `
       <div class="panel" style="padding:20px;max-width:560px">
         <div class="form-row">
           <div class="field"><label>渠道默认超时(秒)</label><input id="s-timeout" type="number"></div>
@@ -809,6 +875,131 @@ Pages.settings = {
         toast('密码已修改', 'ok'); $('#s-old').value = $('#s-new').value = '';
       } catch (e) { toast(e.message, 'err'); }
     };
+  },
+  /* ---------- 预设厂商子页 ---------- */
+  async renderPresets() {
+    const c = $('#settings-content');
+    c.innerHTML = `
+      <div class="panel" style="padding:6px 10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div class="dim" style="font-size:12px">管理预设厂商,新增渠道时可选;支持两个自定义字段与快速获取 Key 链接</div>
+          <button class="btn" id="btn-add-preset">＋ 新增预设</button>
+        </div>
+        <table class="gw-table"><thead><tr>
+          <th>ID</th><th>名称</th><th>适配器</th><th>Base URL</th><th>模型数</th>
+          <th>自定义字段</th><th>获取Key</th><th>内置</th><th>操作</th>
+        </tr></thead><tbody id="preset-tbody"></tbody></table>
+      </div>`;
+    $('#btn-add-preset').onclick = () => this.presetEdit(null);
+    await this.presetRefresh();
+  },
+  async presetRefresh() {
+    const list = await api('/admin/api/presets');
+    const tb = $('#preset-tbody');
+    if (!list.length) { tb.innerHTML = `<tr><td colspan="9"><div class="empty-tip">暂无预设</div></td></tr>`; return; }
+    tb.innerHTML = list.map(p => {
+      const customs = [p.custom_1_key, p.custom_2_key].filter(Boolean);
+      return `<tr>
+        <td class="mono" style="font-size:12px">${esc(p.id)}</td>
+        <td><b>${esc(p.name)}</b>${p.note ? `<div class="dim" style="font-size:11px">${esc(p.note)}</div>` : ''}</td>
+        <td class="mono" style="font-size:12px">${esc(p.adapter)}</td>
+        <td class="mono" style="font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.base_url)}">${esc(p.base_url || '-')}</td>
+        <td class="mono">${(p.models || []).length}</td>
+        <td class="dim" style="font-size:11px">${customs.length ? customs.map(k => esc(k)).join(', ') : '-'}</td>
+        <td>${p.key_url ? `<a href="${esc(p.key_url)}" target="_blank" rel="noopener" style="color:var(--cyan);font-size:11px">链接 ↗</a>` : '<span class="dim">-</span>'}</td>
+        <td>${p.is_built_in ? '<span class="tag info">内置</span>' : '<span class="dim">自定义</span>'}</td>
+        <td style="white-space:nowrap">
+          <button class="btn ghost" style="padding:3px 9px;font-size:12px" data-act="edit" data-id="${esc(p.id)}">编辑</button>
+          <button class="btn danger" style="padding:3px 9px;font-size:12px" data-act="del" data-id="${esc(p.id)}" ${p.is_built_in ? 'disabled title="内置不可删除"' : ''}>删除</button></td></tr>`;
+    }).join('');
+    $$('#preset-tbody button').forEach(b => b.onclick = () => {
+      const act = b.dataset.act, id = b.dataset.id;
+      if (act === 'edit') this.presetEdit(list.find(x => x.id === id));
+      else if (act === 'del') this.presetDel(id);
+    });
+  },
+  presetEdit(p) {
+    const isEdit = !!p;
+    const d = p || {id: '', name: '', adapter: 'openai_compat', base_url: '', models: [],
+      probe_mode: 'models', user_agent: '', needs_proxy: false, local: false, note: '',
+      key_url: '', custom_1_label: '', custom_1_key: '', custom_1_placeholder: '',
+      custom_2_label: '', custom_2_key: '', custom_2_placeholder: ''};
+    const escM = (s) => esc(JSON.stringify(s || [], null, 0));
+    openModal(isEdit ? '编辑预设' : '新增预设', `
+      <div class="form-row">
+        <div class="field"><label>预设 ID *</label><input id="pr-id" value="${esc(d.id)}" ${isEdit ? 'readonly' : ''} placeholder="如 agnes(英文,唯一标识)"></div>
+        <div class="field"><label>显示名称 *</label><input id="pr-name" value="${esc(d.name)}" placeholder="如 Agnes"></div>
+      </div>
+      <div class="form-row">
+        <div class="field" style="flex:2"><label>Base URL</label><input id="pr-base" value="${esc(d.base_url)}" placeholder="https://..."></div>
+        <div class="field"><label>适配器</label>
+          <select id="pr-adapter">${['openai_compat','anthropic','gemini','azure'].map(a =>
+            `<option ${a === d.adapter ? 'selected' : ''}>${a}</option>`).join('')}</select></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>探测方式</label>
+          <select id="pr-probe">
+            <option value="models" ${d.probe_mode === 'models' ? 'selected' : ''}>模型列表端点(免费)</option>
+            <option value="chat" ${d.probe_mode === 'chat' ? 'selected' : ''}>聊天端点(极少消耗)</option>
+            <option value="off" ${d.probe_mode === 'off' ? 'selected' : ''}>不探测</option>
+          </select></div>
+        <div class="field"><label>自定义 User-Agent</label><input id="pr-ua" value="${esc(d.user_agent)}" placeholder="可选"></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>常用模型(逗号分隔)</label>
+          <input id="pr-models" value="${esc((d.models || []).join(', '))}" placeholder="model-a, model-b"></div>
+        <div class="field"><label>快速获取 Key 链接</label>
+          <input id="pr-keyurl" value="${esc(d.key_url)}" placeholder="https://.../api-keys"></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>自定义字段1 名称</label><input id="pr-c1l" value="${esc(d.custom_1_label)}" placeholder="如 Organization ID"></div>
+        <div class="field"><label>键名</label><input id="pr-c1k" value="${esc(d.custom_1_key)}" placeholder="如 openai-organization"></div>
+        <div class="field"><label>占位提示</label><input id="pr-c1p" value="${esc(d.custom_1_placeholder)}" placeholder="可选"></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>自定义字段2 名称</label><input id="pr-c2l" value="${esc(d.custom_2_label)}" placeholder="如 Project ID"></div>
+        <div class="field"><label>键名</label><input id="pr-c2k" value="${esc(d.custom_2_key)}" placeholder="如 project-id"></div>
+        <div class="field"><label>占位提示</label><input id="pr-c2p" value="${esc(d.custom_2_placeholder)}" placeholder="可选"></div>
+      </div>
+      <div class="form-row">
+        <div class="field" style="display:flex;align-items:center;gap:18px">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="pr-proxy" ${d.needs_proxy ? 'checked' : ''}> 需代理访问</label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="pr-local" ${d.local ? 'checked' : ''}> 本地服务</label>
+        </div>
+      </div>
+      <div class="field"><label>备注</label><input id="pr-note" value="${esc(d.note)}" placeholder="可选说明"></div>
+    `, `
+      <button class="btn ghost" onclick="closeModal()">取消</button>
+      <button class="btn" id="btn-save-preset">保存</button>`);
+    $('#btn-save-preset').onclick = async () => {
+      const id = $('#pr-id').value.trim();
+      if (!id || !$('#pr-name').value.trim()) return toast('ID 和名称必填', 'err');
+      const body = {
+        id, name: $('#pr-name').value.trim(),
+        adapter: $('#pr-adapter').value, base_url: $('#pr-base').value.trim(),
+        models: $('#pr-models').value.split(',').map(s => s.trim()).filter(Boolean),
+        probe_mode: $('#pr-probe').value, user_agent: $('#pr-ua').value.trim(),
+        key_url: $('#pr-keyurl').value.trim(),
+        custom_1_label: $('#pr-c1l').value.trim(), custom_1_key: $('#pr-c1k').value.trim(),
+        custom_1_placeholder: $('#pr-c1p').value.trim(),
+        custom_2_label: $('#pr-c2l').value.trim(), custom_2_key: $('#pr-c2k').value.trim(),
+        custom_2_placeholder: $('#pr-c2p').value.trim(),
+        needs_proxy: $('#pr-proxy').checked, local: $('#pr-local').checked,
+        note: $('#pr-note').value.trim(),
+      };
+      try {
+        if (isEdit) await apiPut('/admin/api/presets/' + id, body);
+        else await apiPost('/admin/api/presets', body);
+        closeModal(); toast('已保存', 'ok'); this.presetRefresh();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  },
+  async presetDel(id) {
+    if (!confirm(`确定删除预设「${id}」?`)) return;
+    try {
+      await apiDelete('/admin/api/presets/' + encodeURIComponent(id));
+      toast('已删除', 'ok'); this.presetRefresh();
+    } catch (e) { toast(e.message, 'err'); }
   },
 };
 
