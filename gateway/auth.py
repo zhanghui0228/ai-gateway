@@ -66,6 +66,7 @@ def default_settings():
         "breaker_threshold": "5", "breaker_cooldown": "60",
         "probe_interval": "300",
         "auto_timeout": "120", "auto_max_models": "5",
+        "log_bodies": "1", "log_body_max": "2000", "log_retention_days": "7",
     }
     for k, v in defaults.items():
         if Setting.get(k) is None:

@@ -185,6 +185,59 @@ class ModelPrice(db.Model):
     updated_at = db.Column(db.DateTime, default=utcnow, onupdate=utcnow)
 
 
+class CallLog(db.Model):
+    """调用日志:逐次请求的完整记录(含请求/响应内容,可配置截断与保留期)"""
+    __tablename__ = "call_logs"
+    id = db.Column(db.Integer, primary_key=True)
+    created_at = db.Column(db.DateTime, default=utcnow, index=True)
+    request_id = db.Column(db.String(32), index=True)      # 请求追踪 ID
+    key_id = db.Column(db.Integer, index=True)
+    key_name = db.Column(db.String(128), default="")
+    channel_id = db.Column(db.Integer, index=True)
+    channel_name = db.Column(db.String(128), default="")
+    endpoint = db.Column(db.String(32), default="")        # chat/completions/embeddings/images
+    model_requested = db.Column(db.String(128), default="", index=True)  # 客户端请求的模型(auto 时为 auto)
+    model_actual = db.Column(db.String(128), default="")                 # 实际调用的模型
+    is_stream = db.Column(db.Boolean, default=False)
+    status_code = db.Column(db.Integer, default=0)
+    success = db.Column(db.Boolean, default=False, index=True)
+    latency_ms = db.Column(db.Integer, default=0)
+    retries = db.Column(db.Integer, default=0)
+    prompt_tokens = db.Column(db.BigInteger, default=0)
+    completion_tokens = db.Column(db.BigInteger, default=0)
+    total_tokens = db.Column(db.BigInteger, default=0)
+    cache_read_tokens = db.Column(db.BigInteger, default=0)
+    cost = db.Column(db.Float, default=0.0)
+    client_ip = db.Column(db.String(64), default="")
+    user_agent = db.Column(db.String(256), default="")
+    request_body = db.Column(db.Text, default="")          # 截断后的请求体
+    response_body = db.Column(db.Text, default="")         # 截断后的响应内容
+    error = db.Column(db.String(512), default="")
+
+    def summary(self):
+        return {
+            "id": self.id,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "request_id": self.request_id, "key_id": self.key_id, "key_name": self.key_name,
+            "channel_id": self.channel_id, "channel_name": self.channel_name,
+            "endpoint": self.endpoint, "model_requested": self.model_requested,
+            "model_actual": self.model_actual, "is_stream": self.is_stream,
+            "status_code": self.status_code, "success": self.success,
+            "latency_ms": self.latency_ms, "retries": self.retries,
+            "prompt_tokens": self.prompt_tokens, "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens, "cache_read_tokens": self.cache_read_tokens,
+            "cost": self.cost, "client_ip": self.client_ip, "user_agent": self.user_agent,
+            "error": self.error,
+            "req_len": len(self.request_body or ""), "resp_len": len(self.response_body or ""),
+        }
+
+    def detail(self):
+        d = self.summary()
+        d["request_body"] = self.request_body or ""
+        d["response_body"] = self.response_body or ""
+        return d
+
+
 class UsageLog(db.Model):
     """调用明细"""
     __tablename__ = "usage_logs"

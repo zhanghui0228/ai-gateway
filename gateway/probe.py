@@ -18,6 +18,21 @@ from .models import Channel, Setting
 from .proxy import get_client
 
 
+def _auth_hint(status_code, msg):
+    """把上游鉴权失败翻译成可操作的提示"""
+    text = str(msg or "")
+    if status_code == 401 or "unauthorized" in text.lower() or "invalid" in text.lower():
+        return ("上游拒绝鉴权(401):该 Key 未被站点接受。请在站点后台重新生成 API 令牌"
+                "(通常 sk- 开头,注意区分账号 access token 与 API 令牌),确认令牌已启用且分组包含目标模型")
+    if status_code == 402:
+        return "上游额度/预算已耗尽(402),请到站点后台查看额度或等待额度发放"
+    if status_code == 403:
+        return "上游拒绝访问(403):令牌分组无此模型权限或被风控拦截"
+    if status_code == 429:
+        return "上游限流(429),稍后重试"
+    return ""
+
+
 def probe_chat_endpoint(channel):
     """L2 聊天端点探测:max_tokens=1 真实补全(消耗极少 token)。
     用于上游禁用了模型列表端点的站点(如 AgentRouter 公益站)。"""
@@ -46,7 +61,11 @@ def probe_chat_endpoint(channel):
             msg = (detail.get("error") or {}).get("message") or detail.get("message") or resp.text
         except ValueError:
             msg = resp.text
-        return False, latency, f"HTTP {resp.status_code}: {str(msg)[:120]}", []
+        hint = _auth_hint(resp.status_code, msg)
+        err = f"HTTP {resp.status_code}: {str(msg)[:120]}"
+        if hint:
+            err += f" | {hint}"
+        return False, latency, err, []
     except httpx.HTTPError as e:
         return False, int((time.time() - t0) * 1000), type(e).__name__, []
     except Exception as e:
@@ -72,7 +91,11 @@ def probe_channel(channel):
         resp = client.get(url, headers=headers, timeout=15)
         latency = int((time.time() - t0) * 1000)
         if resp.status_code != 200:
-            return False, latency, f"HTTP {resp.status_code}: {resp.text[:120]}", [], {}
+            hint = _auth_hint(resp.status_code, resp.text[:200])
+            err = f"HTTP {resp.status_code}: {resp.text[:120]}"
+            if hint:
+                err += f" | {hint}"
+            return False, latency, err, [], {}
         try:
             data = resp.json()
         except ValueError:
@@ -174,6 +197,11 @@ def start_scheduler(app):
             with real_app.app_context():
                 try:
                     probe_all()
+                except Exception:
+                    pass
+                try:
+                    from .relay import cleanup_call_logs
+                    cleanup_call_logs()
                 except Exception:
                     pass
     threading.Thread(target=run, daemon=True, name="probe-scheduler").start()

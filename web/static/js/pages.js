@@ -147,6 +147,7 @@ Pages.channels = {
         $('#f-base').value = pr.base_url;
         $('#f-adapter').value = pr.adapter;
         $('#f-models').value = pr.models.join(', ');
+        if (pr.probe_mode) $('#f-probemode').value = pr.probe_mode;
       }
     };
     // 自动获取模型(L1 免费探测,直连上游模型列表端点,附带元数据)
@@ -573,6 +574,142 @@ Pages.usage = {
   },
 };
 
+/* ================= 调用日志 ================= */
+Pages.logs = {
+  state: {page: 1, size: 20},
+  async render(main) {
+    main.innerHTML = `
+      <div class="page-head"><h2>调用日志</h2>
+        <div class="actions">
+          <button class="btn ghost" id="lg-clean">清理旧日志</button>
+          <button class="btn danger" id="lg-clear">清空全部</button></div></div>
+      <div class="panel" style="padding:14px 16px;margin-bottom:16px">
+        <div class="form-row" style="margin-bottom:10px">
+          <div class="field"><label>模型(模糊)</label><input id="lg-model" placeholder="如 gpt-4o / auto"></div>
+          <div class="field"><label>渠道</label><select id="lg-channel"><option value="">全部</option></select></div>
+          <div class="field"><label>API Key</label><select id="lg-key"><option value="">全部</option></select></div>
+          <div class="field"><label>状态</label><select id="lg-success">
+            <option value="">全部</option><option value="true">成功</option><option value="false">失败</option></select></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>关键词(请求/响应/错误/IP)</label><input id="lg-q" placeholder="全文搜索"></div>
+          <div class="field"><label>请求 ID</label><input id="lg-rid" placeholder="X-Request-Id"></div>
+          <div class="field"><label>类型</label><select id="lg-stream">
+            <option value="">全部</option><option value="true">流式</option><option value="false">非流式</option></select></div>
+          <div class="field" style="display:flex;align-items:flex-end;gap:8px">
+            <button class="btn" id="lg-search">查询</button>
+            <button class="btn ghost" id="lg-reset">重置</button></div>
+        </div>
+      </div>
+      <div class="panel" style="padding:6px 10px;margin-bottom:12px">
+        <table class="gw-table"><thead><tr>
+          <th>时间</th><th>请求ID</th><th>模型</th><th>渠道</th><th>Key</th>
+          <th>类型</th><th>Tokens(入/出)</th><th>费用</th><th>延迟</th><th>状态</th><th>客户端</th><th>操作</th>
+        </tr></thead><tbody id="lg-tbody"></tbody></table>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span class="dim" id="lg-total">-</span>
+        <span style="display:flex;gap:8px;align-items:center">
+          <select id="lg-size" style="width:auto"><option>20</option><option>50</option><option>100</option></select>
+          <button class="btn ghost" id="lg-prev">上一页</button>
+          <span class="mono dim" id="lg-page">1</span>
+          <button class="btn ghost" id="lg-next">下一页</button>
+        </span>
+      </div>`;
+    // 填充渠道/Key 下拉
+    try {
+      const chans = await api('/admin/api/channels');
+      $('#lg-channel').innerHTML = '<option value="">全部</option>' +
+        chans.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+      const keys = await api('/admin/api/keys');
+      $('#lg-key').innerHTML = '<option value="">全部</option>' +
+        keys.map(k => `<option value="${k.id}">${esc(k.name || k.key)}</option>`).join('');
+    } catch (e) { /* ignore */ }
+
+    $('#lg-search').onclick = () => { this.state.page = 1; this.refresh(); };
+    $('#lg-reset').onclick = () => {
+      ['lg-model', 'lg-q', 'lg-rid'].forEach(id => $('#' + id).value = '');
+      ['lg-channel', 'lg-key', 'lg-success', 'lg-stream'].forEach(id => $('#' + id).value = '');
+      this.state.page = 1; this.refresh();
+    };
+    $('#lg-size').value = this.state.size;
+    $('#lg-size').onchange = () => { this.state.size = +$('#lg-size').value; this.state.page = 1; this.refresh(); };
+    $('#lg-prev').onclick = () => { if (this.state.page > 1) { this.state.page--; this.refresh(); } };
+    $('#lg-next').onclick = () => { this.state.page++; this.refresh(); };
+    $('#lg-clean').onclick = async () => {
+      const d = prompt('清理多少天前的日志?(输入天数,如 7)', '7');
+      if (!d) return;
+      const r = await apiDelete(`/admin/api/logs?days=${+d}`);
+      toast(`已清理 ${r.deleted} 条`, 'ok'); this.refresh();
+    };
+    $('#lg-clear').onclick = async () => {
+      if (!confirm('确定清空全部调用日志?此操作不可恢复')) return;
+      const r = await apiDelete('/admin/api/logs?days=0');
+      toast(`已清空 ${r.deleted} 条`, 'ok'); this.state.page = 1; this.refresh();
+    };
+    await this.refresh();
+  },
+  async refresh() {
+    const p = new URLSearchParams({page: this.state.page, page_size: this.state.size});
+    const get = (id) => ($('#' + id) ? $('#' + id).value.trim() : '');
+    ['lg-model', 'lg-q', 'lg-rid'].forEach(id => { const v = get(id); if (v) p.set(id.replace('lg-', ''), v); });
+    if (get('lg-channel')) p.set('channel_id', get('lg-channel'));
+    if (get('lg-key')) p.set('key_id', get('lg-key'));
+    if (get('lg-success')) p.set('success', get('lg-success'));
+    if (get('lg-stream')) p.set('stream', get('lg-stream'));
+
+    const r = await api('/admin/api/logs?' + p.toString());
+    this.state.page = r.page;
+    $('#lg-total').textContent = `共 ${r.total} 条 · 第 ${r.page}/${r.pages || 1} 页`;
+    $('#lg-page').textContent = r.page;
+    $('#lg-prev').disabled = r.page <= 1;
+    $('#lg-next').disabled = r.page >= (r.pages || 1);
+    const tb = $('#lg-tbody');
+    tb.innerHTML = r.items.length ? r.items.map(l => `<tr>
+      <td class="dim" style="font-size:12px;white-space:nowrap">${fmtTime(l.created_at)}</td>
+      <td class="mono" style="font-size:11px">${esc(l.request_id || '-')}</td>
+      <td class="mono" style="font-size:12px">${esc(l.model_actual || l.model_requested || '-')}
+        ${l.model_requested === 'auto' ? '<span class="tag info">auto</span>' : ''}</td>
+      <td>${esc(l.channel_name || '-')}</td>
+      <td>${esc(l.key_name || '-')}</td>
+      <td>${l.is_stream ? '<span class="tag info">流式</span>' : '<span class="dim">普通</span>'}</td>
+      <td class="mono">${fmtTokens(l.prompt_tokens)} / ${fmtTokens(l.completion_tokens)}${l.cache_read_tokens ? ` <span style="color:var(--purple)">⚡${fmtTokens(l.cache_read_tokens)}</span>` : ''}</td>
+      <td>${fmtCost(l.cost)}</td>
+      <td class="mono">${fmtMs(l.latency_ms)}</td>
+      <td>${l.success ? '<span class="tag ok">' + l.status_code + '</span>'
+        : `<span class="tag err">${l.status_code || 'ERR'}</span>${l.retries ? ' <span class="tag warn">重试' + l.retries + '</span>' : ''}`}</td>
+      <td class="dim" style="font-size:11px">${esc(l.client_ip || '-')}</td>
+      <td><button class="btn ghost" style="padding:3px 9px;font-size:12px" data-id="${l.id}">详情</button></td>
+    </tr>`).join('') : `<tr><td colspan="12"><div class="empty-tip">暂无调用日志</div></td></tr>`;
+    $$('#lg-tbody button').forEach(b => b.onclick = () => this.detail(+b.dataset.id));
+  },
+  async detail(id) {
+    const d = await api('/admin/api/logs/' + id);
+    const pretty = (s) => {
+      if (!s) return '<span class="dim">(未记录内容)</span>';
+      try { return esc(JSON.stringify(JSON.parse(s), null, 2)); } catch (e) { return esc(s); }
+    };
+    openModal(`调用日志 #${d.id}`, `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;font-size:12.5px">
+        <div><span class="dim">时间:</span> ${fmtTime(d.created_at)}</div>
+        <div><span class="dim">请求ID:</span> <span class="mono">${esc(d.request_id || '-')}</span></div>
+        <div><span class="dim">客户端:</span> ${esc(d.client_ip || '-')}</div>
+        <div><span class="dim">模型:</span> ${esc(d.model_requested || '-')} → ${esc(d.model_actual || '-')}</div>
+        <div><span class="dim">渠道:</span> ${esc(d.channel_name || '-')}</div>
+        <div><span class="dim">Key:</span> ${esc(d.key_name || '-')}</div>
+        <div><span class="dim">状态:</span> ${d.success ? '<span class="tag ok">' + d.status_code + ' 成功</span>' : '<span class="tag err">' + (d.status_code || 'ERR') + ' 失败</span>'}</div>
+        <div><span class="dim">延迟:</span> ${fmtMs(d.latency_ms)} · 重试 ${d.retries || 0} 次</div>
+        <div><span class="dim">Tokens:</span> 入 ${d.prompt_tokens} / 出 ${d.completion_tokens} / 缓存 ${d.cache_read_tokens}</div>
+        <div><span class="dim">费用:</span> ${fmtCost(d.cost)}</div>
+      </div>
+      ${d.error ? `<div class="field"><label>错误信息</label><pre class="code" style="margin:0;color:var(--red)">${esc(d.error)}</pre></div>` : ''}
+      <div class="field"><label>请求体</label><pre class="code" style="margin:0;max-height:220px;overflow:auto">${pretty(d.request_body)}</pre></div>
+      <div class="field"><label>响应内容</label><pre class="code" style="margin:0;max-height:220px;overflow:auto">${pretty(d.response_body)}</pre></div>
+      <div class="dim" style="font-size:11px">User-Agent: ${esc(d.user_agent || '-')}</div>
+    `, `<button class="btn ghost" onclick="closeModal()">关闭</button>`);
+  },
+};
+
 /* ================= 系统设置 ================= */
 Pages.settings = {
   async render(main) {
@@ -604,6 +741,18 @@ Pages.settings = {
           <button class="btn" id="btn-save-set">保存设置</button></div>
       </div>
       <div class="panel" style="padding:20px;max-width:560px;margin-top:18px">
+        <h3 style="font-size:14px;color:var(--text-dim);margin-bottom:14px">调用日志</h3>
+        <div class="form-row">
+          <div class="field"><label>记录请求/响应内容</label>
+            <select id="s-logbodies">
+              <option value="1">记录(便于排查)</option>
+              <option value="0">不记录(仅元数据)</option></select></div>
+          <div class="field"><label>内容截断上限(字符)</label><input id="s-logmax" type="number"></div>
+        </div>
+        <div class="field"><label>日志保留天数(0 = 永久保留)</label><input id="s-logdays" type="number">
+          <div class="hint">过期日志由后台定时任务自动清理</div></div>
+      </div>
+      <div class="panel" style="padding:20px;max-width:560px;margin-top:18px">
         <div class="field"><label>修改管理员密码</label></div>
         <div class="field"><input id="s-old" type="password" placeholder="原密码"></div>
         <div class="field"><input id="s-new" type="password" placeholder="新密码(至少6位)"></div>
@@ -617,13 +766,18 @@ Pages.settings = {
     $('#s-auto').value = s.auto_models || '';
     $('#s-auto-to').value = s.auto_timeout || 120;
     $('#s-auto-max').value = s.auto_max_models || 5;
+    $('#s-logbodies').value = s.log_bodies === '0' || s.log_bodies === 0 ? '0' : '1';
+    $('#s-logmax').value = s.log_body_max ?? 2000;
+    $('#s-logdays').value = s.log_retention_days ?? 7;
     $('#btn-save-set').onclick = async () => {
       try {
         await apiPost('/admin/api/settings', {
           default_timeout: $('#s-timeout').value, max_retry: $('#s-retry').value,
           breaker_threshold: $('#s-threshold').value, breaker_cooldown: $('#s-cooldown').value,
           probe_interval: $('#s-probe').value, auto_models: $('#s-auto').value,
-          auto_timeout: $('#s-auto-to').value, auto_max_models: $('#s-auto-max').value});
+          auto_timeout: $('#s-auto-to').value, auto_max_models: $('#s-auto-max').value,
+          log_bodies: $('#s-logbodies').value, log_body_max: $('#s-logmax').value,
+          log_retention_days: $('#s-logdays').value});
         toast('已保存', 'ok');
       } catch (e) { toast(e.message, 'err'); }
     };

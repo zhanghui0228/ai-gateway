@@ -92,13 +92,15 @@ PRESETS = {
         "models": ["gpt-5.6-sol", "glm-5.3", "deepseek-v4-flash"],
         "prices": {"gpt-5.6-sol": (27.14, 135.71), "glm-5.3": (2.5, 12.5),
                    "deepseek-v4-flash": (1.0, 3.0)},
+        "probe_mode": "chat",
         "note": "公益站,Claude/GPT 限量供应(每日 07:00/19:00 两批);国内直连可用",
     },
     "agentrouter_claude": {
         "name": "AgentRouter Claude(Anthropic 协议)", "adapter": "anthropic",
-        "base_url": "https://ps.agentrouter.org",
+        "base_url": "https://ps.air-outer.com",
         "models": ["claude-opus-5", "claude-opus-4-8"],
         "prices": {"claude-opus-5": (13.57, 67.85), "claude-opus-4-8": (27.14, 135.71)},
+        "probe_mode": "chat",
         "note": "Claude 模型走 Anthropic 协议端点;Claude/GPT 限量供应",
     },
     "ollama": {
@@ -119,6 +121,7 @@ def preset_list():
     return [
         {"id": pid, "name": p["name"], "adapter": p["adapter"], "base_url": p["base_url"],
          "models": p["models"], "prices": p.get("prices", {}),
+         "probe_mode": p.get("probe_mode", "models"),
          "needs_proxy": p.get("needs_proxy", False), "local": p.get("local", False)}
         for pid, p in PRESETS.items()
     ]

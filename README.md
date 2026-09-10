@@ -48,6 +48,7 @@ Flask 单机部署,Windows 直接运行,数据库零配置(SQLite),前端零构�
 | 能力 | 说明 |
 |---|---|
 | 调用明细 | 每次调用记录时间 / Key / 渠道 / 模型 / 输入输出缓存 tokens / 费用 / 延迟 / 状态码 / 重试次数 / 错误信息 |
+| **调用日志** | 逐次请求的完整日志:请求追踪 ID(`X-Request-Id` 响应头)、请求模型与实际模型、渠道/Key、入出缓存 tokens、费用、延迟、重试、客户端 IP 与 User-Agent、**请求体与响应内容**(可配置截断上限或关闭)、错误详情;支持模型模糊/渠道/Key/状态/流式/关键词全文/请求 ID 筛选与分页,按保留天数自动清理 |
 | 每日用量 | 按天聚合每日 tokens(输入/输出/缓存)、总调用次数、活跃模型数、费用,组合图展示 |
 | 热点分析 | 热点模型排名、调用时段热力图(周 x 24 小时,用量统计页 / 总览 / 大屏三处)、模型 x 时段交叉热力 |
 | 数据大屏 | 全屏科技风:核心指标大数字、SSE 实时调用流水、模型调用占比、24h 趋势、渠道健康卡片(含探测延迟)、时段热力图、Key 消耗排行 |
@@ -226,7 +227,8 @@ AIGateway/
 | API Key | `GET/POST /keys`、`PUT/DELETE /keys/<id>` |
 | 单价 | `GET/POST /prices`(POST 支持 `only_missing` 批量填充)、`DELETE /prices/<model>`、`POST /prices/import_presets` |
 | 统计 | `GET /stats/overview`、`/stats/trend`、`/stats/by_model|by_channel|by_key`、`/stats/logs`、`/stats/hot_models`、`/stats/hourly_heatmap`、`/stats/model_hour_heatmap`、`/stats/daily` |
-| 设置 | `GET/POST /settings`(含 `auto_models` 偏好、`probe_interval`) |
+| 调用日志 | `GET /logs`(筛选+分页)、`GET /logs/<id>`(含请求/响应内容)、`DELETE /logs?days=N`(N=0 清空) |
+| 设置 | `GET/POST /settings`(auto 偏好/超时、探测间隔、**日志内容与保留期**) |
 | 大屏 | `GET /events`(SSE 实时事件:usage / probe) |
 
 ---
@@ -244,6 +246,8 @@ AIGateway/
 - auto 路由:`/v1/models` 含 auto;偏好命中、白名单回退、渠道全故障自动降级 ✓
 - 缓存 token:三家协议字段解析正确;流式与非流式均准确落库并展示 ✓
 - 每日统计:按天聚合 tokens(入/出/缓存)、总调用、模型数、费用;按天x模型分布正确 ✓
+- 调用日志:成功/失败/流式三类均正确落库(请求体、响应内容、tokens、缓存、IP、UA、`X-Request-Id`);渠道/Key/状态/流式/模型模糊/中文关键词全文搜索与分页筛选全部验证通过 ✓
+- 中转站兼容:AgentRouter 公益站 `/v1/models` 返回 401 时,自动回退公开定价接口 `/api/pricing` 获取模型清单;401/402/403 探测错误附带可操作提示;渠道可选探测方式(模型列表/聊天端点/不探测)✓
 - 单元测试 42/42 通过(`tests/test_adapters.py`)✓
 
 ## 说明与注意事项

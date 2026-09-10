@@ -467,6 +467,82 @@ def stats_model_hour_heatmap():
     return jsonify(stats.model_hour_heatmap(days=days))
 
 
+# ---------- 调用日志 ----------
+@admin_bp.route("/logs", methods=["GET"])
+@admin_required
+def list_logs():
+    """调用日志:支持模型/渠道/Key/状态/关键词/时间范围筛选与分页"""
+    from flask import request as _rq
+    from gateway.models import CallLog
+    page = max(1, _rq.args.get("page", 1, type=int))
+    size = min(200, max(1, _rq.args.get("page_size", 20, type=int)))
+    q = CallLog.query
+    if _rq.args.get("model"):
+        kw = _rq.args["model"].strip()
+        q = q.filter(db.or_(CallLog.model_actual.like(f"%{kw}%"),
+                            CallLog.model_requested.like(f"%{kw}%")))
+    if _rq.args.get("channel_id"):
+        q = q.filter(CallLog.channel_id == _rq.args.get("channel_id", type=int))
+    if _rq.args.get("key_id"):
+        q = q.filter(CallLog.key_id == _rq.args.get("key_id", type=int))
+    if _rq.args.get("success") in ("true", "false"):
+        q = q.filter(CallLog.success.is_(_rq.args["success"] == "true"))
+    if _rq.args.get("stream") in ("true", "false"):
+        q = q.filter(CallLog.is_stream.is_(_rq.args["stream"] == "true"))
+    if _rq.args.get("request_id"):
+        q = q.filter(CallLog.request_id.like(f"%{_rq.args['request_id'].strip()}%"))
+    if _rq.args.get("q"):
+        kw = f"%{_rq.args['q'].strip()}%"
+        q = q.filter(db.or_(CallLog.request_body.like(kw), CallLog.response_body.like(kw),
+                            CallLog.error.like(kw), CallLog.client_ip.like(kw),
+                            CallLog.key_name.like(kw)))
+    if _rq.args.get("start"):
+        try:
+            from datetime import datetime
+            q = q.filter(CallLog.created_at >= datetime.fromisoformat(_rq.args["start"]))
+        except ValueError:
+            pass
+    if _rq.args.get("end"):
+        try:
+            from datetime import datetime
+            q = q.filter(CallLog.created_at <= datetime.fromisoformat(_rq.args["end"]))
+        except ValueError:
+            pass
+    total = q.count()
+    rows = q.order_by(CallLog.id.desc()).offset((page - 1) * size).limit(size).all()
+    return jsonify({"items": [r.summary() for r in rows], "total": total,
+                    "page": page, "page_size": size,
+                    "pages": (total + size - 1) // size})
+
+
+@admin_bp.route("/logs/<int:lid>", methods=["GET"])
+@admin_required
+def get_log(lid):
+    from gateway.models import CallLog
+    row = db.session.get(CallLog, lid)
+    if not row:
+        return jsonify({"error": "日志不存在"}), 404
+    return jsonify(row.detail())
+
+
+@admin_bp.route("/logs", methods=["DELETE"])
+@admin_required
+def clear_logs():
+    """清空调用日志;?days=N 只清 N 天前的"""
+    from gateway.models import CallLog
+    days = request.args.get("days", type=int)
+    if days and days > 0:
+        from datetime import datetime, timedelta, timezone
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        n = CallLog.query.filter(CallLog.created_at < cutoff).delete(synchronize_session=False)
+    elif days == 0:
+        n = CallLog.query.delete(synchronize_session=False)
+    else:
+        return jsonify({"error": "需指定 days 参数(0=全部清空)"}), 400
+    db.session.commit()
+    return jsonify({"ok": True, "deleted": n})
+
+
 # ---------- 系统设置 ----------
 @admin_bp.route("/settings", methods=["GET"])
 @admin_required
@@ -474,7 +550,8 @@ def get_settings():
     return jsonify({k: Setting.get(k) for k in
                     ("default_timeout", "max_retry", "breaker_threshold",
                      "breaker_cooldown", "probe_interval", "auto_models",
-                     "auto_timeout", "auto_max_models")})
+                     "auto_timeout", "auto_max_models",
+                     "log_bodies", "log_body_max", "log_retention_days")})
 
 
 @admin_bp.route("/settings", methods=["POST"])
@@ -482,7 +559,8 @@ def get_settings():
 def set_settings():
     data = request.get_json(silent=True) or {}
     for k in ("default_timeout", "max_retry", "breaker_threshold",
-              "breaker_cooldown", "probe_interval", "auto_timeout", "auto_max_models"):
+              "breaker_cooldown", "probe_interval", "auto_timeout", "auto_max_models",
+              "log_bodies", "log_body_max", "log_retention_days"):
         if k in data:
             try:
                 int(data[k])

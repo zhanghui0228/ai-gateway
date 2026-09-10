@@ -16,8 +16,8 @@ async function switchPage(name) {
   if (refreshTimer) clearInterval(refreshTimer);
   disposeCharts();
   await Pages[name].render($('#main'));
-  // 总览/统计页 30s 自动刷新
-  if (name === 'dashboard' || name === 'usage') {
+  // 总览/统计/日志页自动刷新
+  if (name === 'dashboard' || name === 'usage' || name === 'logs') {
     refreshTimer = setInterval(async () => {
       if (currentPage === name) await Pages[name].refresh();
     }, 30000);

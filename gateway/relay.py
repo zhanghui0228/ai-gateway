@@ -1,6 +1,7 @@
 """转发核心:鉴权模型校验 -> 选路 -> 协议转换 -> 故障转移 -> 计费落库"""
 import json
 import time
+import uuid
 
 import httpx
 from flask import Response
@@ -10,7 +11,7 @@ from .adapters.base import AdapterError
 from .adapters.registry import get_adapter
 from .adapters.openai_compat import USAGE_SENTINEL
 from .db import db
-from .models import Channel, Setting
+from .models import CallLog, Channel, Setting
 from .proxy import get_client
 
 # 可触发故障转移的上游状态码:鉴权失效/限流/超时/服务端错误
@@ -54,6 +55,84 @@ def _read_request_text(openai_body):
         p = openai_body["prompt"]
         total.append(p if isinstance(p, str) else " ".join(map(str, p)))
     return " ".join(total)
+
+
+def _client_info():
+    """从当前请求上下文提取客户端 IP 与 User-Agent(生成器阶段上下文已失效,需提前取)"""
+    try:
+        from flask import has_request_context, request
+        if has_request_context():
+            ip = (request.headers.get("X-Forwarded-For") or request.remote_addr or "")
+            ip = ip.split(",")[0].strip()
+            return ip[:64], (request.headers.get("User-Agent") or "")[:256]
+    except Exception:
+        pass
+    return "", ""
+
+
+def _log_bodies_enabled():
+    try:
+        return int(Setting.get("log_bodies", 1)) != 0
+    except (TypeError, ValueError):
+        return True
+
+
+def _body_max():
+    try:
+        return max(0, int(Setting.get("log_body_max", 2000)))
+    except (TypeError, ValueError):
+        return 2000
+
+
+def _truncate(text, limit=None):
+    if limit is None:
+        limit = _body_max()
+    if not text or limit <= 0:
+        return ""
+    return text[:limit] + ("…[已截断]" if len(text) > limit else "")
+
+
+def write_call_log(request_id, key_row, channel, kind, model_requested, model_actual,
+                   status_code, success, latency_ms, retries, pt, ct, cache_read, cost,
+                   is_stream, client_ip, user_agent, request_body, response_body, error=""):
+    """写入调用日志(尊重"记录内容"设置)"""
+    if not _log_bodies_enabled():
+        request_body = response_body = ""
+    elif request_body is not None:
+        request_body = _truncate(request_body)
+        response_body = _truncate(response_body)
+    entry = CallLog(
+        request_id=request_id,
+        key_id=key_row.id if key_row else None,
+        key_name=(key_row.name or key_row.key[:8]) if key_row else "",
+        channel_id=channel.id if channel else None,
+        channel_name=channel.name if channel else "",
+        endpoint=kind, model_requested=model_requested or "", model_actual=model_actual or "",
+        is_stream=bool(is_stream), status_code=status_code, success=success,
+        latency_ms=latency_ms, retries=retries,
+        prompt_tokens=pt, completion_tokens=ct, total_tokens=pt + ct,
+        cache_read_tokens=cache_read, cost=cost,
+        client_ip=client_ip, user_agent=user_agent,
+        request_body=request_body or "", response_body=response_body or "",
+        error=(error or "")[:500])
+    db.session.add(entry)
+    db.session.commit()
+    return entry
+
+
+def cleanup_call_logs():
+    """按保留期清理调用日志(0 = 永久保留)"""
+    from datetime import datetime, timedelta, timezone
+    try:
+        days = int(Setting.get("log_retention_days", 7))
+    except (TypeError, ValueError):
+        days = 7
+    if days <= 0:
+        return 0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    n = CallLog.query.filter(CallLog.created_at < cutoff).delete(synchronize_session=False)
+    db.session.commit()
+    return n
 
 
 def _auto_candidates(api_key_row):
@@ -120,6 +199,16 @@ def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_ti
     tried = []
     last_error = None
     started = time.time()
+    # 请求上下文信息(生成器阶段会失效,提前捕获)
+    request_id = uuid.uuid4().hex[:16]
+    client_ip, user_agent = _client_info()
+    try:
+        request_body_text = json.dumps(openai_body, ensure_ascii=False)
+    except (TypeError, ValueError):
+        request_body_text = ""
+    ctx = {"request_id": request_id, "client_ip": client_ip, "user_agent": user_agent,
+           "request_body": request_body_text, "model_requested": model,
+           "is_stream": stream}
 
     candidates = balancer.pick_candidates(model, exclude_ids=set())
     if not candidates:
@@ -127,11 +216,18 @@ def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_ti
         channels = Channel.query.filter_by(enabled=True).all()
         candidates = [c for c in channels if not (c.models and model not in c.models)][:1]
     if not candidates:
+        write_call_log(ctx["request_id"], api_key_row, None, kind, model, model,
+                       404, False, int((time.time() - started) * 1000), 0,
+                       0, 0, 0, 0.0, stream, ctx["client_ip"], ctx["user_agent"],
+                       ctx["request_body"], "",
+                       error=f"没有可用渠道支持模型 {model}")
         raise RelayError(f"没有可用渠道支持模型 {model}", 404)
 
+    last_channel = None
     for attempt, channel in enumerate(candidates):
         if attempt >= max_retry:
             break
+        last_channel = channel
         adapter = get_adapter(channel.adapter)
         upstream_model = channel.real_model(model)
         timeout = _get_timeout(channel)
@@ -150,7 +246,7 @@ def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_ti
         try:
             if req.stream:
                 return _do_stream(app, api_key_row, channel, adapter, client, req,
-                                  model, kind, request_text, attempt, started)
+                                  model, kind, request_text, attempt, started, ctx)
             resp = client.post(req.url, headers=req.headers, json=req.json_body,
                                timeout=timeout)
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout,
@@ -171,9 +267,11 @@ def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_ti
                 continue
             # 请求本身有问题(400/404/422),直接透传给客户端
             _log_failure(api_key_row, channel, model, resp.status_code, last_error,
-                         attempt, started, request_text)
+                         attempt, started, request_text, kind=kind, ctx=ctx,
+                         response_text=resp.text[:2000])
             return Response(resp.text, status=resp.status_code,
-                            content_type="application/json")
+                            content_type="application/json",
+                            headers={"X-Request-Id": request_id})
 
         # 成功
         balancer.note_success(channel)
@@ -193,10 +291,19 @@ def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_ti
         _finish_success(api_key_row, channel, model, pt, ct, total, cost,
                         int((time.time() - started) * 1000), False, estimated, attempt,
                         cache_read=cache.get("cache_read", 0),
-                        cache_creation=cache.get("cache_creation", 0))
+                        cache_creation=cache.get("cache_creation", 0),
+                        kind=kind, ctx=ctx,
+                        response_text=json.dumps(openai_json, ensure_ascii=False))
         return Response(json.dumps(openai_json, ensure_ascii=False),
-                        status=200, content_type="application/json")
+                        status=200, content_type="application/json",
+                        headers={"X-Request-Id": request_id})
 
+    # 所有候选渠道尝试失败:记录失败日志便于排查
+    write_call_log(ctx["request_id"], api_key_row, last_channel, kind, ctx["model_requested"],
+                   model, 502, False, int((time.time() - started) * 1000), len(tried),
+                   0, 0, 0, 0.0, stream, ctx["client_ip"], ctx["user_agent"],
+                   ctx["request_body"], "",
+                   error=f"所有渠道尝试失败({len(tried)} 个),最后错误: {last_error}")
     raise RelayError(f"所有渠道尝试失败({len(tried)} 个),最后错误: {last_error}")
 
 
@@ -208,8 +315,9 @@ def _sse_data_lines(resp):
 
 
 def _do_stream(app, api_key_row, channel, adapter, client, req,
-               model, kind, request_text, attempt, started):
+               model, kind, request_text, attempt, started, ctx=None):
     timeout = _get_timeout(channel)
+    ctx = ctx or {}
 
     # 先发起请求确认能拿到 200,再交给生成器(此阶段失败仍可故障转移)
     try:
@@ -226,8 +334,10 @@ def _do_stream(app, api_key_row, channel, adapter, client, req,
         if _failoverable(resp.status_code):
             raise RelayError(f"上游 {resp.status_code}: {body}")
         _log_failure(api_key_row, channel, model, resp.status_code,
-                     f"上游 {resp.status_code}: {body}", attempt, started, request_text)
-        return Response(body, status=resp.status_code, content_type="application/json")
+                     f"上游 {resp.status_code}: {body}", attempt, started, request_text,
+                     kind=kind, ctx=ctx, response_text=body)
+        return Response(body, status=resp.status_code, content_type="application/json",
+                        headers={"X-Request-Id": ctx.get("request_id", "")})
 
     balancer.note_success(channel)
     channel_id, channel_name = channel.id, channel.name
@@ -271,10 +381,13 @@ def _do_stream(app, api_key_row, channel, adapter, client, req,
                     _finish_success(api_key_row, channel, model, pt, ct, pt + ct, cost,
                                     latency, True, estimated, attempt,
                                     cache_read=usage.get("cache_read", 0),
-                                    cache_creation=usage.get("cache_creation", 0))
+                                    cache_creation=usage.get("cache_creation", 0),
+                                    kind=kind, ctx=ctx,
+                                    response_text="".join(collected_text))
                 else:
                     _log_failure(api_key_row, channel, model, status_code, error_msg,
-                                 attempt, started, request_text)
+                                 attempt, started, request_text, kind=kind, ctx=ctx,
+                                 response_text="".join(collected_text))
 
     return Response(generate(), status=200,
                     content_type="text/event-stream; charset=utf-8",
@@ -283,7 +396,7 @@ def _do_stream(app, api_key_row, channel, adapter, client, req,
 
 def _finish_success(api_key_row, channel, model, pt, ct, total, cost,
                     latency_ms, is_stream, estimated, attempt,
-                    cache_read=0, cache_creation=0):
+                    cache_read=0, cache_creation=0, kind="", ctx=None, response_text=""):
     if total > 0:
         quota.consume(api_key_row, total)
     quota.log_usage(
@@ -293,14 +406,28 @@ def _finish_success(api_key_row, channel, model, pt, ct, total, cost,
         cache_read_tokens=cache_read, cache_creation_tokens=cache_creation,
         latency_ms=latency_ms, status_code=200, success=True, is_stream=is_stream,
         estimated=estimated, retries=attempt, error="")
+    ctx = ctx or {}
+    write_call_log(ctx.get("request_id", ""), api_key_row, channel, kind,
+                   ctx.get("model_requested", model), model, 200, True, latency_ms,
+                   attempt, pt, ct, cache_read, cost, is_stream,
+                   ctx.get("client_ip", ""), ctx.get("user_agent", ""),
+                   ctx.get("request_body", ""), response_text)
 
 
 def _log_failure(api_key_row, channel, model, status_code, error, attempt,
-                 started, request_text):
+                 started, request_text, kind="", ctx=None, response_text=""):
+    ctx = ctx or {}
+    latency_ms = int((time.time() - started) * 1000)
     quota.log_usage(
         key_id=api_key_row.id, key_name=api_key_row.name or api_key_row.key[:8],
         channel_id=channel.id, channel_name=channel.name, model=model,
         prompt_tokens=0, completion_tokens=0, total_tokens=0, cost=0.0,
-        latency_ms=int((time.time() - started) * 1000), status_code=status_code,
+        latency_ms=latency_ms, status_code=status_code,
         success=False, is_stream=False, estimated=False, retries=attempt,
         error=(error or "")[:500])
+    write_call_log(ctx.get("request_id", ""), api_key_row, channel, kind,
+                   ctx.get("model_requested", model), model, status_code, False,
+                   latency_ms, attempt, 0, 0, 0, 0.0,
+                   ctx.get("is_stream", False),
+                   ctx.get("client_ip", ""), ctx.get("user_agent", ""),
+                   ctx.get("request_body", ""), response_text, error=error)
