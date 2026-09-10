@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <defs>
+    <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#00e5ff"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <linearGradient id="g2" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#3b82f6"/>
+      <stop offset="1" stop-color="#00e5ff"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#00e5ff" stop-opacity="0.3"/>
+      <stop offset="1" stop-color="#00e5ff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <!-- 光晕 -->
+  <circle cx="60" cy="60" r="56" fill="url(#glow)"/>
+  <!-- 外六边形 -->
+  <path d="M60 8L104 32V88L60 112L16 88V32Z" stroke="url(#g1)" stroke-width="2.5" stroke-linejoin="round"/>
+  <!-- 内六边形 -->
+  <path d="M60 22L92 38V82L60 98L28 82V38Z" stroke="url(#g2)" stroke-width="1" stroke-linejoin="round" opacity="0.4"/>
+  <!-- 网关拱门 -->
+  <path d="M60 32C73 32 84 43 84 56C84 69 73 78 60 78C47 78 36 69 36 56C36 43 47 32 60 32Z" stroke="url(#g1)" stroke-width="2.5" stroke-linecap="round"/>
+  <!-- 中心节点 -->
+  <circle cx="60" cy="56" r="6" fill="url(#g1)"/>
+  <!-- 三个模型节点 -->
+  <circle cx="60" cy="28" r="4" fill="#00e5ff"/>
+  <circle cx="84" cy="72" r="4" fill="#8b5cf6"/>
+  <circle cx="36" cy="72" r="4" fill="#3b82f6"/>
+  <!-- 连接线:中心到各节点 -->
+  <line x1="60" y1="50" x2="60" y2="32" stroke="url(#g1)" stroke-width="1.5" opacity="0.8"/>
+  <line x1="60" y1="62" x2="80" y2="70" stroke="url(#g1)" stroke-width="1.5" opacity="0.8"/>
+  <line x1="60" y1="62" x2="40" y2="70" stroke="url(#g1)" stroke-width="1.5" opacity="0.8"/>
+  <!-- 外圈数据点 -->
+  <circle cx="60" cy="14" r="2" fill="#00e5ff" opacity="0.6"/>
+  <circle cx="100" cy="36" r="2" fill="#8b5cf6" opacity="0.6"/>
+  <circle cx="100" cy="78" r="2" fill="#3b82f6" opacity="0.6"/>
+  <circle cx="60" cy="102" r="2" fill="#00e5ff" opacity="0.6"/>
+  <circle cx="20" cy="78" r="2" fill="#8b5cf6" opacity="0.6"/>
+  <circle cx="20" cy="36" r="2" fill="#3b82f6" opacity="0.6"/>
+</svg>

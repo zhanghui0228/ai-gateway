@@ -15,6 +15,8 @@
   animation: hue 6s linear infinite;
 }
 @keyframes hue { 0% { background-position: 0 0; } 100% { background-position: 200% 0; } }
+.screen-logo-wrap { display: flex; align-items: center; gap: 14px; }
+.logo-screen { width: 40px; height: 40px; flex-shrink: 0; filter: drop-shadow(0 0 8px rgba(0,229,255,.35)); }
 .screen-head .sub { font-size: 11px; color: var(--text-dim); letter-spacing: 4px; margin-top: 4px; }
 .screen-head .clock { font-family: var(--mono); font-size: 20px; color: var(--cyan); text-align: right; }
 .screen-head .clock .date { font-size: 11px; color: var(--text-dim); display: block; margin-top: 3px; }
