@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AIGateway · 数据大屏</title>
+<link rel="stylesheet" href="/static/css/theme.css">
+<link rel="stylesheet" href="/static/css/console.css">
+<link rel="stylesheet" href="/static/css/screen.css">
+<script src="/static/lib/echarts.min.js"></script>
+</head>
+<body>
+<div class="scanline"></div>
+<div class="screen">
+  <header class="screen-head panel">
+    <div>
+      <div class="title">AI 网关 · 运行监控大屏</div>
+      <div class="sub">AIGATEWAY REALTIME MONITORING</div>
+    </div>
+    <div class="clock"><span id="clock">--:--:--</span><span class="date" id="clock-date"></span></div>
+  </header>
+
+  <div class="screen-body">
+    <div class="kpi-row">
+      <div class="panel kpi"><span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
+        <div class="label">总调用</div><div class="value" id="k-calls">0</div></div>
+      <div class="panel kpi"><span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
+        <div class="label">成功率</div><div class="value g" id="k-rate">100%</div></div>
+      <div class="panel kpi"><span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
+        <div class="label">今日 Tokens</div><div class="value p" id="k-tokens">0</div></div>
+      <div class="panel kpi"><span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
+        <div class="label">总费用</div><div class="value a" id="k-cost">¥0</div></div>
+      <div class="panel kpi"><span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
+        <div class="label">在线渠道</div><div class="value" id="k-chans">0/0</div></div>
+    </div>
+
+    <!-- 左列:渠道健康 + Key 消耗排行 -->
+    <div class="panel-col">
+      <div class="panel sp-panel" style="flex:1.2">
+        <div class="sp-title">渠道健康状态</div>
+        <div class="sp-body" style="overflow-y:auto" id="chan-list"></div>
+      </div>
+      <div class="panel sp-panel" style="flex:1">
+        <div class="sp-title">Key 消耗排行</div>
+        <div class="sp-body" style="overflow-y:auto" id="key-rank"></div>
+      </div>
+    </div>
+
+    <!-- 中列:实时流水 + 趋势 -->
+    <div class="panel-col">
+      <div class="panel sp-panel feed-panel" style="flex:1.1">
+        <div class="sp-title">实时调用流水</div>
+        <div class="sp-body"><div id="feed-list"></div></div>
+      </div>
+      <div class="panel sp-panel" style="flex:1">
+        <div class="sp-title">24 小时调用趋势</div>
+        <div class="sp-body"><div id="trend24"></div></div>
+      </div>
+    </div>
+
+    <!-- 右列:模型占比 + 时段热点 -->
+    <div class="panel-col">
+      <div class="panel sp-panel" style="flex:1">
+        <div class="sp-title">模型调用占比</div>
+        <div class="sp-body"><div id="pie-model"></div></div>
+      </div>
+      <div class="panel sp-panel" style="flex:1">
+        <div class="sp-title">调用时段热点 · 近7天</div>
+        <div class="sp-body"><div id="heat24"></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/common.js"></script>
+<script>
+/* 时钟 */
+function tick() {
+  const d = new Date();
+  $('#clock').textContent = d.toLocaleTimeString('zh-CN', {hour12: false});
+  $('#clock-date').textContent = d.toLocaleDateString('zh-CN', {year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'long'});
+}
+setInterval(tick, 1000); tick();
+
+const charts = {};
+function chart(id) {
+  if (!charts[id]) charts[id] = echarts.init(document.getElementById(id));
+  return charts[id];
+}
+
+function flashNum(el, val) {
+  if (el.textContent !== String(val)) {
+    el.textContent = val;
+    el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
+  }
+}
+
+async function refreshAll() {
+  try {
+    const [ov, trend, byModel, byKey, chans, heat] = await Promise.all([
+      api('/admin/api/stats/overview?days=1'),
+      api('/admin/api/stats/trend?days=1'),
+      api('/admin/api/stats/by_model?days=7'),
+      api('/admin/api/stats/by_key?days=7'),
+      api('/admin/api/channels'),
+      api('/admin/api/stats/hourly_heatmap?days=7'),
+    ]);
+    flashNum($('#k-calls'), ov.total_calls);
+    flashNum($('#k-rate'), ov.success_rate + '%');
+    flashNum($('#k-tokens'), fmtTokens(ov.today_tokens));
+    flashNum($('#k-cost'), fmtCost(ov.cost));
+    flashNum($('#k-chans'), `${ov.online_channels}/${ov.total_channels}`);
+
+    /* 趋势 */
+    chart('trend24').setOption({
+      tooltip: {trigger: 'axis', backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
+        textStyle: {color: '#d7e6ff', fontSize: 11}},
+      grid: {left: 10, right: 16, top: 26, bottom: 6, containLabel: true},
+      legend: {data: ['调用', 'Tokens'], textStyle: CHART_TEXT, top: 0, right: 0, itemWidth: 12, itemHeight: 8},
+      xAxis: {type: 'category', data: trend.map(t => t.hour.slice(11)), ...CHART_AXIS, boundaryGap: false},
+      yAxis: [{type: 'value', ...CHART_AXIS, splitLine: {lineStyle: {color: 'rgba(0,229,255,.08)'}}},
+              {type: 'value', ...CHART_AXIS, splitLine: {show: false}}],
+      series: [
+        {name: '调用', type: 'line', smooth: true, symbol: 'none', data: trend.map(t => t.calls),
+          lineStyle: {color: '#3b82f6', width: 2},
+          areaStyle: {color: {type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [{offset: 0, color: 'rgba(59,130,246,.3)'}, {offset: 1, color: 'rgba(59,130,246,0)'}]}}},
+        {name: 'Tokens', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'none',
+          data: trend.map(t => t.tokens), lineStyle: {color: '#00e5ff', width: 2},
+          areaStyle: {color: {type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [{offset: 0, color: 'rgba(0,229,255,.25)'}, {offset: 1, color: 'rgba(0,229,255,0)'}]}}},
+      ]}, true);
+
+    /* 模型占比 */
+    const top = byModel.slice().sort((a, b) => b.calls - a.calls);
+    const pieData = top.slice(0, 6);
+    if (top.length > 6) pieData.push({name: '其他', calls: top.slice(6).reduce((s, x) => s + x.calls, 0)});
+    chart('pie-model').setOption({
+      tooltip: {trigger: 'item', backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
+        textStyle: {color: '#d7e6ff', fontSize: 11}},
+      legend: {bottom: 0, textStyle: CHART_TEXT, itemWidth: 10, itemHeight: 10},
+      series: [{type: 'pie', radius: ['42%', '65%'], center: ['50%', '44%'],
+        data: pieData.map(x => ({name: x.name, value: x.calls})),
+        label: {color: '#6b83a8', fontSize: 11, formatter: '{b}\n{d}%'},
+        itemStyle: {borderColor: '#060b18', borderWidth: 2},
+        emphasis: {itemStyle: {shadowBlur: 16, shadowColor: 'rgba(0,229,255,.4)'}}}]}, true);
+
+    /* 模型 Tokens 排行(中列下方,复用 model-rank 容器不存在则跳过) */
+    const rankEl = document.getElementById('model-rank');
+    if (rankEl) {
+      const byTokens = byModel.slice().sort((a, b) => b.tokens - a.tokens).slice(0, 8);
+      const maxTk = Math.max(1, ...byTokens.map(x => x.tokens));
+      rankEl.innerHTML = byTokens.length ? byTokens.map((x, i) => `
+        <div class="rank-item"><span class="no ${i < 3 ? 'top' : ''}">${i + 1}</span>
+          <span class="name" title="${esc(x.name)}">${esc(x.name)}</span>
+          <span class="val">${fmtTokens(x.tokens)}</span></div>
+        <div style="padding:0 4px"><div class="rank-bar" style="width:${(x.tokens / maxTk * 100).toFixed(1)}%"></div></div>`).join('')
+        : `<div class="empty-tip">暂无数据</div>`;
+    }
+
+    /* 调用时段热力图(周 x 24h) */
+    const days = ['一', '二', '三', '四', '五', '六', '日'];
+    const hmData = [];
+    let maxV = 0;
+    (heat || []).forEach((row, di) => (row || []).forEach((v, hi) => {
+      if (v) { hmData.push([hi, di, v]); maxV = Math.max(maxV, v); }
+    }));
+    chart('heat24').setOption({
+      tooltip: {backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
+        textStyle: {color: '#d7e6ff', fontSize: 11},
+        formatter: p => `周${days[p.data[1]]} ${String(p.data[0]).padStart(2, '0')}:00<br/>调用 ${p.data[2]} 次`},
+      grid: {left: 10, right: 12, top: 8, bottom: 36, containLabel: true},
+      xAxis: {type: 'category', data: Array.from({length: 24}, (_, i) => String(i).padStart(2, '0')), ...CHART_AXIS},
+      yAxis: {type: 'category', data: days.map(d => '周' + d), ...CHART_AXIS},
+      visualMap: {min: 0, max: Math.max(1, maxV), orient: 'horizontal', left: 'center', bottom: 0,
+        itemWidth: 9, itemHeight: 70, textStyle: CHART_TEXT,
+        inRange: {color: ['rgba(13,22,44,0.5)', '#3b82f6', '#00e5ff', '#10e0a0']}},
+      series: [{type: 'heatmap', data: hmData,
+        itemStyle: {borderColor: '#060b18', borderWidth: 1, borderRadius: 2}}]}, true);
+
+    /* Key 排行 */
+    const byKeySorted = byKey.slice().sort((a, b) => b.tokens - a.tokens).slice(0, 6);
+    const maxKey = Math.max(1, ...byKeySorted.map(x => x.tokens));
+    $('#key-rank').innerHTML = byKeySorted.length ? byKeySorted.map((x, i) => `
+      <div class="rank-item"><span class="no ${i < 3 ? 'top' : ''}">${i + 1}</span>
+        <span class="name" title="${esc(x.name)}">${esc(x.name || '未命名')}</span>
+        <span class="val">${fmtTokens(x.tokens)}</span></div>
+      <div style="padding:0 4px"><div class="rank-bar" style="width:${(x.tokens / maxKey * 100).toFixed(1)}%"></div></div>`).join('')
+      : `<div class="empty-tip">暂无数据</div>`;
+
+    /* 渠道健康(含定时探测延迟) */
+    $('#chan-list').innerHTML = chans.length ? chans.map(c => {
+      const cls = !c.enabled ? 'off' : (c.breaker_state === 'open' ? 'breaker' : 'on');
+      const dot = !c.enabled ? 'off' : (c.breaker_state === 'open' ? 'breaker' : 'on');
+      const state = !c.enabled ? '停用' : c.breaker_state === 'open' ? '熔断中' : c.breaker_state === 'half_open' ? '半开探测' : '运行中';
+      let probe = '';
+      if (c.probe_ok === true) probe = `<span style="font-family:var(--mono);font-size:11px;color:var(--green)">${c.probe_latency}ms</span>`;
+      else if (c.probe_ok === false) probe = '<span style="font-size:11px;color:var(--red)">离线</span>';
+      return `<div class="chan-card ${cls}">
+        <span class="chan-status-dot ${dot}"></span>
+        <div class="name">${esc(c.name)}
+          <div class="meta">${(c.models || []).length} 模型 · P${c.priority}/W${c.weight}${c.proxy_url ? ' · 代理' : ''}</div></div>
+        ${probe}
+        <span class="dim" style="font-size:11px">${state}</span></div>`;
+    }).join('') : `<div class="empty-tip">暂无渠道</div>`;
+  } catch (e) { /* 静默,等下次刷新 */ }
+}
+
+/* SSE 实时流水 */
+function connectSSE() {
+  const es = new EventSource('/admin/api/events');
+  es.onmessage = ev => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch (e) { return; }
+    if (msg.type === 'usage') {
+      const u = msg.data;
+      const el = document.createElement('div');
+      el.className = 'feed-item';
+      const t = u.created_at ? new Date(u.created_at).toLocaleTimeString('zh-CN', {hour12: false}) : '';
+      el.innerHTML = `<span class="t">${t}</span>
+        <span class="${u.success ? 'ok' : 'bad'}">${u.success ? '✓' : '✕'}</span>
+        <span class="m"><b>${esc(u.model || '-')}</b> · ${esc(u.channel_name || '-')} · ${esc(u.key_name || '-')}${u.retries ? ' · 重试' + u.retries : ''}</span>
+        <span class="tk">${u.total_tokens ? fmtTokens(u.total_tokens) + ' tk' : ''}</span>
+        <span class="dim">${fmtCost(u.cost)}</span>`;
+      $('#feed-list').prepend(el);
+      while (list_children_limit()) $('#feed-list').lastChild.remove();
+      refreshSoon();
+    } else if (msg.type === 'probe') {
+      // 渠道探测事件:刷新渠道健康面板
+      refreshSoon();
+    }
+  };
+  es.onerror = () => { es.close(); setTimeout(connectSSE, 5000); };
+}
+
+/* SSE 触发后轻量刷新(节流 2s) */
+let refreshT = null;
+function refreshSoon() {
+  if (refreshT) return;
+  refreshT = setTimeout(() => { refreshT = null; refreshAll(); }, 2000);
+}
+function list_children_limit() { return $('#feed-list').children.length > 20; }
+
+window.addEventListener('resize', () => Object.values(charts).forEach(c => c.resize()));
+refreshAll();
+connectSSE();
+setInterval(refreshAll, 30000);  // 兜底轮询
+</script>
+</body>
+</html>

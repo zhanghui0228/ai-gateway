@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AIGateway · 控制台</title>
+<link rel="stylesheet" href="/static/css/theme.css">
+<link rel="stylesheet" href="/static/css/console.css">
+<script src="/static/lib/echarts.min.js"></script>
+</head>
+<body>
+<div class="console-wrap">
+  <aside class="side">
+    <div class="side-logo">
+      <div class="mark">AI GATEWAY</div>
+      <div class="sub">MODEL RELAY CONSOLE</div>
+    </div>
+    <nav class="side-nav">
+      <div class="nav-item active" data-page="dashboard"><span class="ico">◈</span>总览</div>
+      <div class="nav-item" data-page="channels"><span class="ico">⬡</span>渠道管理</div>
+      <div class="nav-item" data-page="keys"><span class="ico">⚿</span>API Key</div>
+      <div class="nav-item" data-page="prices"><span class="ico">₿</span>模型单价</div>
+      <div class="nav-item" data-page="usage"><span class="ico">▦</span>用量统计</div>
+      <div class="nav-item" data-page="settings"><span class="ico">⚙</span>系统设置</div>
+    </nav>
+    <div class="side-foot">
+      <div class="who" id="who">admin</div>
+      <button class="btn ghost" style="padding:4px 10px;font-size:12px" onclick="location.href='/screen'">大屏</button>
+      <button class="btn ghost" style="padding:4px 10px;font-size:12px" id="btn-logout">退出</button>
+    </div>
+  </aside>
+  <main class="main" id="main"></main>
+</div>
+
+<!-- 通用弹窗 -->
+<div class="modal-mask" id="modal-mask">
+  <div class="modal">
+    <div class="modal-head"><span id="modal-title"></span>
+      <span style="cursor:pointer;color:var(--text-dim)" onclick="closeModal()">✕</span></div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-foot" id="modal-foot"></div>
+  </div>
+</div>
+<div id="toast-box"></div>
+
+<script src="/static/js/common.js"></script>
+<script src="/static/js/pages.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

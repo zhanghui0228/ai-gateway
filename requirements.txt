@@ -1,0 +1,4 @@
+flask>=3.1
+flask-sqlalchemy>=3.1
+httpx[socks]>=0.28
+waitress>=3.0
