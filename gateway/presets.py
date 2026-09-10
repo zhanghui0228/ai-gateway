@@ -86,6 +86,21 @@ PRESETS = {
                    "BAAI/bge-m3"],
         "prices": {"deepseek-ai/DeepSeek-V3": (2.0, 8.0), "Qwen/Qwen2.5-72B-Instruct": (4.13, 4.13)},
     },
+    "agentrouter": {
+        "name": "AgentRouter 公益站", "adapter": "openai_compat",
+        "base_url": "https://ps.air-outer.com",
+        "models": ["gpt-5.6-sol", "glm-5.3", "deepseek-v4-flash"],
+        "prices": {"gpt-5.6-sol": (27.14, 135.71), "glm-5.3": (2.5, 12.5),
+                   "deepseek-v4-flash": (1.0, 3.0)},
+        "note": "公益站,Claude/GPT 限量供应(每日 07:00/19:00 两批);国内直连可用",
+    },
+    "agentrouter_claude": {
+        "name": "AgentRouter Claude(Anthropic 协议)", "adapter": "anthropic",
+        "base_url": "https://ps.agentrouter.org",
+        "models": ["claude-opus-5", "claude-opus-4-8"],
+        "prices": {"claude-opus-5": (13.57, 67.85), "claude-opus-4-8": (27.14, 135.71)},
+        "note": "Claude 模型走 Anthropic 协议端点;Claude/GPT 限量供应",
+    },
     "ollama": {
         "name": "Ollama 本地", "adapter": "openai_compat",
         "base_url": "http://127.0.0.1:11434",
