@@ -11,184 +11,290 @@
 </head>
 <body>
 <div class="scanline"></div>
-<div class="docs-back"><button class="btn ghost" onclick="location.href='/'">返回控制台</button></div>
-<div class="docs-wrap">
-  <div class="docs-head panel">
-    <h1>AIGateway 对外接口文档</h1>
-    <div class="sub">OPENAI-COMPATIBLE UNIFIED API</div>
-    <div class="base" id="base-url"></div>
-    <div style="padding:0 16px 14px;color:var(--text-dim);font-size:12.5px">
-      所有接口与 OpenAI SDK 完全兼容:将 <span class="mono">base_url</span> 指向本网关,
-      <span class="mono">api_key</span> 填网关签发的 Key(<span class="mono">sk-gw-*</span>)即可访问所有已配置渠道的模型,包括 Claude / Gemini 等原生协议模型(网关自动完成协议转换)。
-    </div>
-  </div>
-
-  <div class="doc-section panel" id="sec-endpoints">
-    <h2>接口清单</h2>
-    <div class="endpoint">
-      <div class="ep-line"><span class="method post">POST</span><span class="path">/v1/chat/completions</span><span class="tag info">核心</span></div>
-      <div class="ep-desc">对话补全。<b>支持 stream 流式</b>(SSE)、工具调用、多模态图片(base64)。请求体与 OpenAI 一致:<b>model</b> 填网关中配置的模型名,messages / temperature / max_tokens / tools / stream 等参数原样透传。</div>
-    </div>
-    <div class="endpoint">
-      <div class="ep-line"><span class="method post">POST</span><span class="path">/v1/completions</span></div>
-      <div class="ep-desc">文本补全(旧版接口)。参数同 OpenAI。</div>
-    </div>
-    <div class="endpoint">
-      <div class="ep-line"><span class="method post">POST</span><span class="path">/v1/embeddings</span></div>
-      <div class="ep-desc">文本向量化。Gemini 原生 embedding 模型已自动转换为 OpenAI 格式。</div>
-    </div>
-    <div class="endpoint">
-      <div class="ep-line"><span class="method post">POST</span><span class="path">/v1/images/generations</span></div>
-      <div class="ep-desc">图片生成(仅支持提供该能力的 OpenAI 兼容渠道)。</div>
-    </div>
-    <div class="endpoint">
-      <div class="ep-line"><span class="method get">GET</span><span class="path">/v1/models</span></div>
-      <div class="ep-desc">当前 Key 可用的模型列表(自动聚合所有启用渠道,并按 Key 白名单过滤)。</div>
-    </div>
-    <div class="endpoint">
-      <div class="ep-line"><span class="method get">GET</span><span class="path">/docs</span><span class="tag dim">本页</span></div>
-      <div class="ep-desc">本接口文档。</div>
-    </div>
-  </div>
-
-  <div class="doc-section panel" id="sec-quickstart">
-    <h2>快速接入 · Python (openai SDK)</h2>
-    <pre class="code" data-copyable><span class="cm"># pip install openai</span>
-<span class="kw">from</span> openai <span class="kw">import</span> OpenAI
-
-client = OpenAI(
-    base_url=<span class="str">"http://127.0.0.1:5100/v1"</span>,
-    api_key=<span class="str">"sk-gw-你的网关Key"</span>,
-)
-
-<span class="cm"># 非流式</span>
-resp = client.chat.completions.create(
-    model=<span class="str">"deepseek-chat"</span>,          <span class="cm"># 任意已配置模型,含 claude / gemini</span>
-    messages=[{<span class="str">"role"</span>: <span class="str">"user"</span>, <span class="str">"content"</span>: <span class="str">"你好"</span>}],
-)
-<span class="kw">print</span>(resp.choices[0].message.content)
-
-<span class="cm"># 流式</span>
-stream = client.chat.completions.create(
-    model=<span class="str">"claude-sonnet-4-5"</span>,
-    messages=[{<span class="str">"role"</span>: <span class="str">"user"</span>, <span class="str">"content"</span>: <span class="str">"写一首诗"</span>}],
-    stream=<span class="kw">True</span>,
-)
-<span class="kw">for</span> chunk <span class="kw">in</span> stream:
-    <span class="kw">if</span> chunk.choices[0].delta.content:
-        <span class="kw">print</span>(chunk.choices[0].delta.content, end=<span class="str">""</span>)</pre>
-  </div>
-
-  <div class="doc-section panel" id="sec-curl">
-    <h2>curl 调用示例</h2>
-    <pre class="code" data-copyable><span class="cm"># 非流式</span>
-curl http://127.0.0.1:5100/v1/chat/completions \
-  -H <span class="str">"Authorization: Bearer sk-gw-你的Key"</span> \
-  -H <span class="str">"Content-Type: application/json"</span> \
-  -d <span class="str">'{
-    "model": "gemini-2.5-flash",
-    "messages": [{"role": "user", "content": "你好"}]
-  }'</span>
-
-<span class="cm"># 流式(SSE):逐行 data: {...},以 data: [DONE] 结束</span>
-curl -N http://127.0.0.1:5100/v1/chat/completions \
-  -H <span class="str">"Authorization: Bearer sk-gw-你的Key"</span> \
-  -H <span class="str">"Content-Type: application/json"</span> \
-  -d <span class="str">'{
-    "model": "deepseek-chat",
-    "messages": [{"role": "user", "content": "讲个笑话"}],
-    "stream": true
-  }'</span></pre>
-  </div>
-
-  <div class="doc-section panel" id="sec-js">
-    <h2>JavaScript (fetch) 示例</h2>
-    <pre class="code" data-copyable><span class="cm">// 流式读取 SSE</span>
-<span class="kw">const</span> resp = <span class="kw">await</span> fetch(<span class="str">"http://127.0.0.1:5100/v1/chat/completions"</span>, {
-  method: <span class="str">"POST"</span>,
-  headers: {
-    <span class="str">"Authorization"</span>: <span class="str">"Bearer sk-gw-你的Key"</span>,
-    <span class="str">"Content-Type"</span>: <span class="str">"application/json"</span>,
-  },
-  body: JSON.stringify({
-    model: <span class="str">"qwen-plus"</span>,
-    messages: [{ role: <span class="str">"user"</span>, content: <span class="str">"你好"</span> }],
-    stream: <span class="kw">true</span>,
-  }),
-});
-<span class="kw">const</span> reader = resp.body.getReader();
-<span class="kw">const</span> decoder = <span class="kw">new</span> TextDecoder();
-<span class="kw">let</span> buf = <span class="str">""</span>;
-<span class="kw">while</span> (<span class="kw">true</span>) {
-  <span class="kw">const</span> { done, value } = <span class="kw">await</span> reader.read();
-  <span class="kw">if</span> (done) <span class="kw">break</span>;
-  buf += decoder.decode(value, { stream: <span class="kw">true</span> });
-  <span class="kw">const</span> lines = buf.split(<span class="str">"\n\n"</span>);
-  buf = lines.pop();
-  <span class="kw">for</span> (<span class="kw">const</span> line <span class="kw">of</span> lines) {
-    <span class="kw">if</span> (!line.startsWith(<span class="str">"data: "</span>)) <span class="kw">continue</span>;
-    <span class="kw">const</span> payload = line.slice(6);
-    <span class="kw">if</span> (payload === <span class="str">"[DONE]"</span>) <span class="kw">break</span>;
-    <span class="kw">const</span> json = JSON.parse(payload);
-    <span class="kw">const</span> delta = json.choices?.[0]?.delta?.content;
-    <span class="kw">if</span> (delta) document.body.append(delta);
-  }
-}</pre>
-  </div>
-
-    <div class="doc-section panel" id="sec-auto">
-      <h2>auto 智能选型</h2>
-      <div class="ep-desc" style="padding-top:10px">
-        <b>model 填 "auto"</b> 时,网关自动选择实际调用的模型,适合"只管问、不挑模型"的场景:<br>
-        · 优先按管理员在 系统设置 → auto 模型偏好 配置的顺序尝试(如 <span class="mono">deepseek-chat, gpt-4o-mini</span>)<br>
-        · 未配置偏好时:按 Key 白名单 → 全部启用渠道(渠道优先级降序)生成候选<br>
-        · 某模型无可用渠道(如全部熔断)时自动降级到下一候选,仍受故障转移与熔断保护<br>
-        · 实际使用的模型在响应的 <span class="mono">model</span> 字段中返回
+<div class="docs-layout">
+  <!-- 侧边导航 -->
+  <aside class="docs-side">
+    <div class="docs-side-head">
+      <img src="/static/img/logo.svg" class="logo-doc" alt="">
+      <div>
+        <div class="mark" style="font-size:15px">AI GATEWAY</div>
+        <div class="sub" style="font-size:9px">API DOCUMENTATION</div>
       </div>
-      <pre class="code" data-copyable>curl http://127.0.0.1:5100/v1/chat/completions \
-  -H <span class="str">"Authorization: Bearer sk-gw-你的Key"</span> \
-  -H <span class="str">"Content-Type: application/json"</span> \
-  -d <span class="str">'{
-    "model": "auto",
-    "messages": [{"role": "user", "content": "你好"}]
-  }'</span></pre>
     </div>
+    <nav class="docs-nav">
+      <div class="nav-group">入门</div>
+      <a href="#overview" class="docs-nav-link active">概览</a>
+      <a href="#auth" class="docs-nav-link">鉴权方式</a>
+      <a href="#baseurl" class="docs-nav-link">请求地址</a>
+      <div class="nav-group">核心接口</div>
+      <a href="#chat" class="docs-nav-link">聊天补全</a>
+      <a href="#completions" class="docs-nav-link">文本补全</a>
+      <a href="#embeddings" class="docs-nav-link">嵌入向量</a>
+      <a href="#images" class="docs-nav-link">图像生成</a>
+      <a href="#models" class="docs-nav-link">模型列表</a>
+      <div class="nav-group">协议适配</div>
+      <a href="#protocol" class="docs-nav-link">多协议转换</a>
+      <a href="#stream" class="docs-nav-link">流式响应</a>
+      <a href="#auto" class="docs-nav-link">auto 路由</a>
+      <div class="nav-group">管理接口</div>
+      <a href="#admin" class="docs-nav-link">控制台 API</a>
+    </nav>
+    <div class="docs-side-foot">
+      <a href="/" class="btn ghost" style="width:100%;justify-content:center;font-size:12px">← 返回控制台</a>
+    </div>
+  </aside>
 
-    <div class="doc-section panel" id="sec-notes">
-    <h2>错误码与说明</h2>
-    <div class="ep-desc" style="padding-top:10px">
-      <b>401</b> — API Key 缺失 / 无效 / 已过期 &nbsp;&nbsp;|&nbsp;&nbsp;
-      <b>403</b> — Key 无权访问该模型(白名单限制)<br>
-      <b>429</b> — Key 令牌额度已耗尽 &nbsp;&nbsp;|&nbsp;&nbsp;
-      <b>404</b> — 没有可用渠道支持该模型 &nbsp;&nbsp;|&nbsp;&nbsp;
-      <b>502</b> — 所有候选渠道尝试失败(明细见控制台用量日志)<br><br>
-      · 网关自动完成<b>故障转移</b>:单渠道失败会按优先级/权重自动切换下一渠道,客户端无感知<br>
-      · 流式响应默认注入 <span class="mono">stream_options.include_usage</span>,最后一个 chunk 携带精确 usage 用于计费<br>
-      · 未配置单价的模型按 0 元计费;额度扣减与费用统计详见管理控制台
-    </div>
-  </div>
+  <!-- 主内容 -->
+  <main class="docs-main">
+    <header class="docs-head">
+      <h1>API 接口文档</h1>
+      <div class="sub">OPENAI COMPATIBLE · ANTHROPIC · GEMINI · AZURE</div>
+      <div class="docs-meta">
+        <span class="meta-tag">统一 OpenAI 兼容</span>
+        <span class="meta-tag">流式 / 非流式</span>
+        <span class="meta-tag">多协议自动转换</span>
+        <span class="meta-tag">免登录调用</span>
+      </div>
+    </header>
+
+    <!-- 概览 -->
+    <section class="doc-section" id="overview">
+      <h2>概览</h2>
+      <div class="doc-body">
+        <p>AIGateway 对外提供统一的 OpenAI 兼容 API，同时内部完成 Anthropic Claude、Google Gemini、Azure OpenAI 等协议的自动转换。你只需一个 Base URL + 一个 API Key，即可调用全球主流模型。</p>
+        <div class="feat-grid">
+          <div class="feat-card"><div class="feat-ico">⬡</div><div class="feat-t">统一接口</div><div class="feat-d">OpenAI 格式通吃全部模型</div></div>
+          <div class="feat-card"><div class="feat-ico">⇄</div><div class="feat-t">协议转换</div><div class="feat-d">Claude / Gemini / Azure 自动适配</div></div>
+          <div class="feat-card"><div class="feat-ico">⚡</div><div class="feat-t">流式输出</div><div class="feat-d">SSE 实时推送,逐 token 返回</div></div>
+          <div class="feat-card"><div class="feat-ico">◈</div><div class="feat-t">auto 路由</div><div class="feat-d">model=auto 自动选最优渠道</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 鉴权 -->
+    <section class="doc-section" id="auth">
+      <h2>鉴权方式</h2>
+      <div class="doc-body">
+        <p>在请求头中携带 API Key 进行鉴权。Key 由控制台「API Key 管理」签发，可设置额度、模型白名单与过期时间。</p>
+        <pre class="code"><button class="copy-btn" data-copy>复制</button><span class="cm">// 请求头</span>
+Authorization: Bearer <span class="str">&lt;你的 API Key&gt;</span></pre>
+        <div class="alert info">
+          <b>提示：</b>Key 格式为 <code>sk-gw-...</code>，在控制台签发后立即复制保存，列表只显示掩码。
+        </div>
+      </div>
+    </section>
+
+    <!-- 请求地址 -->
+    <section class="doc-section" id="baseurl">
+      <h2>请求地址</h2>
+      <div class="doc-body">
+        <pre class="code"><button class="copy-btn" data-copy>复制</button><span class="cm"># 本机默认</span>
+<span class="kw">BASE_URL</span> = <span class="str">http://127.0.0.1:5100</span>
+
+<span class="cm"># Docker 部署(容器内互通)</span>
+<span class="kw">BASE_URL</span> = <span class="str">http://host.docker.internal:5100</span></pre>
+      </div>
+    </section>
+
+    <!-- 聊天补全 -->
+    <section class="doc-section" id="chat">
+      <h2>聊天补全</h2>
+      <div class="endpoint">
+        <div class="ep-line"><span class="method post">POST</span><span class="path">/v1/chat/completions</span></div>
+        <div class="ep-desc">最核心的对话接口，支持流式与非流式。兼容 OpenAI Chat 格式，内部自动转 Claude / Gemini / Azure 协议。</div>
+      </div>
+      <div class="doc-body">
+        <h3>请求示例</h3>
+        <pre class="code"><button class="copy-btn" data-copy>复制</button>curl http://127.0.0.1:5100/v1/chat/completions \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -H <span class="str">"Authorization: Bearer sk-gw-xxx"</span> \
+  -d '{
+    <span class="str">"model"</span>: <span class="str">"gpt-4o"</span>,
+    <span class="str">"messages"</span>: [{<span class="str">"role"</span>: <span class="str">"user"</span>, <span class="str">"content"</span>: <span class="str">"你好"</span>}],
+    <span class="str">"stream"</span>: <span class="kw">true</span>
+  }'</pre>
+        <h3>请求参数</h3>
+        <table class="doc-table">
+          <tr><th>字段</th><th>类型</th><th>说明</th></tr>
+          <tr><td>model</td><td>string</td><td>模型 ID，或填 <code>auto</code> 由网关自动选择</td></tr>
+          <tr><td>messages</td><td>array</td><td>对话消息列表，支持 system / user / assistant</td></tr>
+          <tr><td>stream</td><td>bool</td><td>是否流式返回，默认 false</td></tr>
+          <tr><td>temperature</td><td>float</td><td>采样温度 0~2，默认 0.7</td></tr>
+          <tr><td>max_tokens</td><td>int</td><td>最大输出 token 数</td></tr>
+        </table>
+        <h3>响应示例(非流式)</h3>
+        <pre class="code"><button class="copy-btn" data-copy>复制</button>{
+  <span class="str">"id"</span>: <span class="str">"chatcmpl-xxx"</span>,
+  <span class="str">"model"</span>: <span class="str">"gpt-4o"</span>,
+  <span class="str">"choices"</span>: [{
+    <span class="str">"message"</span>: {<span class="str">"role"</span>: <span class="str">"assistant"</span>, <span class="str">"content"</span>: <span class="str">"你好!有什么可以帮你的?"</span>},
+    <span class="str">"finish_reason"</span>: <span class="str">"stop"</span>
+  }],
+  <span class="str">"usage"</span>: {<span class="str">"prompt_tokens"</span>: <span class="kw">8</span>, <span class="str">"completion_tokens"</span>: <span class="kw">12</span>, <span class="str">"total_tokens"</span>: <span class="kw">20</span>}
+}</pre>
+      </div>
+    </section>
+
+    <!-- 文本补全 -->
+    <section class="doc-section" id="completions">
+      <h2>文本补全</h2>
+      <div class="endpoint">
+        <div class="ep-line"><span class="method post">POST</span><span class="path">/v1/completions</span></div>
+        <div class="ep-desc">经典文本补全接口，给定 prompt 返回续写结果。</div>
+      </div>
+      <div class="doc-body">
+        <pre class="code"><button class="copy-btn" data-copy>复制</button>curl http://127.0.0.1:5100/v1/completions \
+  -H <span class="str">"Authorization: Bearer sk-gw-xxx"</span> \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -d '{<span class="str">"model"</span>: <span class="str">"deepseek-chat"</span>, <span class="str">"prompt"</span>: <span class="str">"从前有座山"</span>, <span class="str">"max_tokens"</span>: <span class="kw">100</span>}'</pre>
+      </div>
+    </section>
+
+    <!-- 嵌入 -->
+    <section class="doc-section" id="embeddings">
+      <h2>嵌入向量</h2>
+      <div class="endpoint">
+        <div class="ep-line"><span class="method post">POST</span><span class="path">/v1/embeddings</span></div>
+        <div class="ep-desc">文本向量化接口，用于语义搜索、聚类等场景。</div>
+      </div>
+      <div class="doc-body">
+        <pre class="code"><button class="copy-btn" data-copy>复制</button>curl http://127.0.0.1:5100/v1/embeddings \
+  -H <span class="str">"Authorization: Bearer sk-gw-xxx"</span> \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -d '{<span class="str">"model"</span>: <span class="str">"text-embedding-3-large"</span>, <span class="str">"input"</span>: <span class="str">"要向量化的文本"</span>}'</pre>
+      </div>
+    </section>
+
+    <!-- 图像 -->
+    <section class="doc-section" id="images">
+      <h2>图像生成</h2>
+      <div class="endpoint">
+        <div class="ep-line"><span class="method post">POST</span><span class="path">/v1/images/generations</span></div>
+        <div class="ep-desc">文生图接口，当前支持 DALL·E 等模型。</div>
+      </div>
+      <div class="doc-body">
+        <pre class="code"><button class="copy-btn" data-copy>复制</button>curl http://127.0.0.1:5100/v1/images/generations \
+  -H <span class="str">"Authorization: Bearer sk-gw-xxx"</span> \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -d '{<span class="str">"model"</span>: <span class="str">"dall-e-3"</span>, <span class="str">"prompt"</span>: <span class="str">"一只在月球上奔跑的猫"</span>, <span class="str">"n"</span>: <span class="kw">1</span>}'</pre>
+      </div>
+    </section>
+
+    <!-- 模型列表 -->
+    <section class="doc-section" id="models">
+      <h2>模型列表</h2>
+      <div class="endpoint">
+        <div class="ep-line"><span class="method get">GET</span><span class="path">/v1/models</span></div>
+        <div class="ep-desc">返回当前 API Key 有权访问的全部模型列表。第一个固定为 <code>auto</code>，表示由网关自动路由。</div>
+      </div>
+      <div class="doc-body">
+        <pre class="code"><button class="copy-btn" data-copy>复制</button>curl http://127.0.0.1:5100/v1/models \
+  -H <span class="str">"Authorization: Bearer sk-gw-xxx"</span></pre>
+      </div>
+    </section>
+
+    <!-- 协议转换 -->
+    <section class="doc-section" id="protocol">
+      <h2>多协议转换</h2>
+      <div class="doc-body">
+        <p>网关内部自动完成协议转换，你只需用 OpenAI 格式发请求，即可调用 Claude、Gemini、Azure 等模型：</p>
+        <table class="doc-table">
+          <tr><th>目标模型</th><th>协议</th><th>说明</th></tr>
+          <tr><td>Claude 系列</td><td>Anthropic ↔ OpenAI</td><td>自动转 messages / system / streaming 格式</td></tr>
+          <tr><td>Gemini 系列</td><td>Gemini ↔ OpenAI</td><td>自动转 contents / parts / safety 字段</td></tr>
+          <tr><td>Azure OpenAI</td><td>Azure ↔ OpenAI</td><td>自动映射部署名与 api-version</td></tr>
+          <tr><td>DeepSeek / Kimi / 通义 / 智谱</td><td>OpenAI 兼容</td><td>原生兼容，直接转发</td></tr>
+        </table>
+        <div class="alert info">
+          <b>提示：</b>渠道配置中可设置「模型映射」，将对外暴露的模型名映射到上游真实模型 ID。
+        </div>
+      </div>
+    </section>
+
+    <!-- 流式 -->
+    <section class="doc-section" id="stream">
+      <h2>流式响应</h2>
+      <div class="doc-body">
+        <p>设置 <code>stream: true</code> 后，服务端以 SSE (Server-Sent Events) 逐 token 推送结果，最后一条为 <code>data: [DONE]</code>。</p>
+        <pre class="code"><button class="copy-btn" data-copy>复制</button>data: {<span class="str">"choices"</span>: [{<span class="str">"delta"</span>: {<span class="str">"content"</span>: <span class="str">"你"</span>}}]}
+
+data: {<span class="str">"choices"</span>: [{<span class="str">"delta"</span>: {<span class="str">"content"</span>: <span class="str">"好"</span>}}]}
+
+data: {<span class="str">"choices"</span>: [{<span class="str">"delta"</span>: {}, <span class="str">"finish_reason"</span>: <span class="str">"stop"</span>}]}
+
+data: [DONE]</pre>
+        <div class="alert warn">
+          <b>注意：</b>流式响应需在客户端正确处理 SSE 协议，推荐使用 OpenAI SDK 直接对接。
+        </div>
+      </div>
+    </section>
+
+    <!-- auto -->
+    <section class="doc-section" id="auto">
+      <h2>auto 智能路由</h2>
+      <div class="doc-body">
+        <p>将 model 设为 <code>auto</code>，网关会根据 API Key 白名单、渠道优先级与可用模型自动选择最优渠道。</p>
+        <pre class="code"><button class="copy-btn" data-copy>复制</button>curl http://127.0.0.1:5100/v1/chat/completions \
+  -H <span class="str">"Authorization: Bearer sk-gw-xxx"</span> \
+  -d '{<span class="str">"model"</span>: <span class="str">"auto"</span>, <span class="str">"messages"</span>: [{<span class="str">"role"</span>: <span class="str">"user"</span>, <span class="str">"content"</span>: <span class="str">"你好"</span>}]}'</pre>
+        <div class="alert info">
+          <b>提示：</b>可在控制台「系统设置」配置 auto 偏好模型列表，未配置时回退到 Key 白名单 / 全部模型。
+        </div>
+      </div>
+    </section>
+
+    <!-- 管理接口 -->
+    <section class="doc-section" id="admin">
+      <h2>控制台 API</h2>
+      <div class="doc-body">
+        <p>除上述对外接口外，控制台提供完整的管理 API（需管理员登录后操作）：</p>
+        <table class="doc-table">
+          <tr><th>模块</th><th>路径前缀</th><th>说明</th></tr>
+          <tr><td>渠道</td><td>/admin/api/channels</td><td>渠道 CRUD、探测、自动获取模型</td></tr>
+          <tr><td>API Key</td><td>/admin/api/keys</td><td>签发、编辑、删除 Key</td></tr>
+          <tr><td>模型单价</td><td>/admin/api/prices</td><td>模型定价与元数据</td></tr>
+          <tr><td>预设厂商</td><td>/admin/api/presets</td><td>预设厂商动态管理</td></tr>
+          <tr><td>统计</td><td>/admin/api/stats</td><td>用量、热点、时段热力图</td></tr>
+          <tr><td>调用日志</td><td>/admin/api/logs</td><td>请求明细、详情</td></tr>
+          <tr><td>系统设置</td><td>/admin/api/settings</td><td>超时、熔断、auto 配置</td></tr>
+        </table>
+      </div>
+    </section>
+
+    <footer class="docs-foot">
+      <div class="dim" style="font-size:11px">AIGateway · 本地模型网关 · 统一 OpenAI 兼容接口</div>
+    </footer>
+  </main>
 </div>
+
 <script>
-/* 自动填入当前主机 */
-(function () {
-  const base = location.origin + "/v1";
-  const el = document.getElementById("base-url");
-  el.innerHTML = 'Base URL: <b>' + base + '</b>';
-  document.querySelectorAll("pre.code").forEach(p => {
-    p.innerHTML = p.innerHTML.replaceAll("http://127.0.0.1:5100/v1", base);
+// 平滑滚动 + 导航高亮
+document.querySelectorAll('.docs-nav-link').forEach(link => {
+  link.addEventListener('click', e => {
+    e.preventDefault();
+    const target = document.querySelector(link.getAttribute('href'));
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
-  /* 复制按钮 */
-  document.querySelectorAll("pre.code[data-copyable]").forEach(p => {
-    const btn = document.createElement("button");
-    btn.className = "copy-btn"; btn.textContent = "复制";
-    btn.onclick = () => {
-      navigator.clipboard.writeText(p.innerText).then(() => {
-        btn.textContent = "已复制"; setTimeout(() => btn.textContent = "复制", 1500);
-      });
-    };
-    p.appendChild(btn);
+});
+// 滚动时高亮当前章节
+const sections = document.querySelectorAll('.doc-section[id]');
+const navLinks = document.querySelectorAll('.docs-nav-link');
+window.addEventListener('scroll', () => {
+  let current = '';
+  sections.forEach(s => { if (window.scrollY >= s.offsetTop - 100) current = s.id; });
+  navLinks.forEach(l => l.classList.toggle('active', l.getAttribute('href') === '#' + current));
+}, { passive: true });
+// 复制代码
+document.querySelectorAll('.copy-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const pre = btn.parentElement;
+    const text = pre.innerText.replace('复制', '').trim();
+    navigator.clipboard.writeText(text).then(() => {
+      btn.textContent = '已复制';
+      setTimeout(() => btn.textContent = '复制', 1500);
+    });
   });
-})();
+});
 </script>
 </body>
 </html>
