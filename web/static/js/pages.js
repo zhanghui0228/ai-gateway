@@ -793,6 +793,9 @@ Pages.settings = {
       $$('.sub-nav-btn').forEach(x => x.classList.remove('active'));
       b.classList.add('active');
       this.renderSub();
+      // 写入 hash,刷新/前进后退可保留子页
+      if (b.dataset.sub === 'presets') history.replaceState(null, '', '#settings:presets');
+      else history.replaceState(null, '', window.location.pathname);
     });
     this.renderSub();
   },
