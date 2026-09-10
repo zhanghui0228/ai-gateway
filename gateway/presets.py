@@ -92,16 +92,18 @@ PRESETS = {
         "models": ["gpt-5.6-sol", "glm-5.3", "deepseek-v4-flash"],
         "prices": {"gpt-5.6-sol": (27.14, 135.71), "glm-5.3": (2.5, 12.5),
                    "deepseek-v4-flash": (1.0, 3.0)},
-        "probe_mode": "chat",
-        "note": "公益站,Claude/GPT 限量供应(每日 07:00/19:00 两批);国内直连可用",
+        "probe_mode": "models",
+        "user_agent": "codex_cli_rs/0.20.0",
+        "note": "该站校验客户端指纹,已预填放行的 codex_cli_rs UA;Claude/GPT 限量供应",
     },
     "agentrouter_claude": {
         "name": "AgentRouter Claude(Anthropic 协议)", "adapter": "anthropic",
         "base_url": "https://ps.air-outer.com",
         "models": ["claude-opus-5", "claude-opus-4-8"],
         "prices": {"claude-opus-5": (13.57, 67.85), "claude-opus-4-8": (27.14, 135.71)},
-        "probe_mode": "chat",
-        "note": "Claude 模型走 Anthropic 协议端点;Claude/GPT 限量供应",
+        "probe_mode": "models",
+        "user_agent": "claude-cli/1.0.60 (external, cli)",
+        "note": "Claude 走 Anthropic 协议端点;站点校验客户端指纹,已预填 claude-cli UA",
     },
     "ollama": {
         "name": "Ollama 本地", "adapter": "openai_compat",
@@ -122,6 +124,7 @@ def preset_list():
         {"id": pid, "name": p["name"], "adapter": p["adapter"], "base_url": p["base_url"],
          "models": p["models"], "prices": p.get("prices", {}),
          "probe_mode": p.get("probe_mode", "models"),
+         "user_agent": p.get("user_agent", ""),
          "needs_proxy": p.get("needs_proxy", False), "local": p.get("local", False)}
         for pid, p in PRESETS.items()
     ]

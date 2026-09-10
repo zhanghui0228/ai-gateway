@@ -85,6 +85,8 @@ def create_channel():
         pricing_override=data.get("pricing_override") or {},
         timeout=int(data.get("timeout", 0)), note=data.get("note", ""),
         probe_mode=data.get("probe_mode") or "models",
+        user_agent=data.get("user_agent", ""),
+        extra_headers=data.get("extra_headers") or {},
         azure_api_version=data.get("azure_api_version", "2024-10-21"))
     db.session.add(ch)
     db.session.commit()
@@ -100,9 +102,15 @@ def update_channel(cid):
     data = request.get_json(silent=True) or {}
     old_proxy = ch.proxy_url
     for field in ("name", "preset", "adapter", "base_url", "api_key", "proxy_url", "note",
-                  "azure_api_version", "probe_mode"):
+                  "azure_api_version", "probe_mode", "user_agent"):
         if field in data:
-            setattr(ch, field, data[field] or "" if field != "name" else data[field])
+            val = data[field]
+            # 掩码 Key(如 sk-ab***cd)视为"未修改",保持原值
+            if field == "api_key" and val and "***" in val:
+                continue
+            setattr(ch, field, val or "" if field != "name" else val)
+    if "extra_headers" in data:
+        ch.extra_headers = data["extra_headers"] or {}
     for field in ("models", "model_mapping", "pricing_override"):
         if field in data:
             setattr(ch, field, data[field] or [])
@@ -393,8 +401,12 @@ def fetch_models():
         if not ch:
             return jsonify({"error": "渠道不存在"}), 404
         for f in ("base_url", "api_key", "proxy_url", "adapter"):
-            if data.get(f):
-                setattr(ch, f, data[f])
+            val = data.get(f)
+            if not val:
+                continue
+            if f == "api_key" and "***" in val:
+                continue   # 掩码值不覆盖已存 Key
+            setattr(ch, f, val)
     else:
         ch = _TempChannel()
         ch.base_url = (data.get("base_url") or "").strip()

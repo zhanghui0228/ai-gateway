@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import httpx
 
 from . import events
+from .adapters.base import apply_channel_headers
 from .adapters.registry import get_adapter
 from .db import db
 from .models import Channel, Setting
@@ -46,6 +47,7 @@ def probe_chat_endpoint(channel):
                                     {"model": upstream_model,
                                      "messages": [{"role": "user", "content": "hi"}],
                                      "max_tokens": 1, "stream": False})
+        apply_channel_headers(channel, req.headers)
     except Exception as e:
         return False, 0, str(e), []
 
@@ -80,6 +82,7 @@ def probe_channel(channel):
                else (channel.api_key or "").split(",")[0].strip())
     try:
         url, headers = adapter.models_request(channel, api_key)
+        apply_channel_headers(channel, headers)
     except Exception as e:
         return False, 0, str(e), [], {}
 

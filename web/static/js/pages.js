@@ -81,14 +81,24 @@ Pages.channels = {
     btn.disabled = false; btn.textContent = '探测';
     this.refresh();
   },
-  async edit(c) {
+  async edit(row) {
     let presets = [];
     try { presets = await api('/admin/api/presets'); } catch (e) {}
-    const isEdit = !!c;
-    if (isEdit) { try { c = await api('/admin/api/channels'); c = c.find(x => x.id === c.id) || c; } catch (e) {} }
+    const isEdit = !!(row && row.id);
+    // 注意:不要用 c 覆盖入参(reassign 后再用 c.id 会导致取到列表数组,字段全部回落默认值)
+    let c = row;
+    if (isEdit) {
+      try {
+        const list = await api('/admin/api/channels');
+        c = list.find(x => x.id === row.id) || row;
+      } catch (e) { c = row; }
+    }
     const p = c || {name: '', preset: 'custom', adapter: 'openai_compat', base_url: '',
       api_key: '', models: [], model_mapping: {}, weight: 1, priority: 0, enabled: true,
-      proxy_url: '', pricing_override: {}, timeout: 0, note: '', azure_api_version: '2024-10-21'};
+      proxy_url: '', pricing_override: {}, timeout: 0, note: '', azure_api_version: '2024-10-21',
+      probe_mode: 'models'};
+    // 编辑态 Key 为掩码(如 sk-ab***cd):留空保存则保持原 Key 不变
+    const keyMasked = isEdit && (p.api_key || '').includes('***');
     openModal(isEdit ? '编辑渠道' : '新增渠道', `
       <div class="form-row">
         <div class="field"><label>渠道名称 *</label><input id="f-name" value="${esc(p.name)}"></div>
@@ -104,7 +114,8 @@ Pages.channels = {
             `<option ${a === p.adapter ? 'selected' : ''}>${a}</option>`).join('')}</select></div>
       </div>
       <div class="field"><label>API Key(多个用英文逗号分隔,自动轮询)</label>
-        <input id="f-key" value="${esc(p.api_key || '')}" placeholder="sk-..." ${isEdit ? '' : ''}></div>
+        <input id="f-key" value="${esc(p.api_key || '')}" placeholder="sk-...">
+        ${keyMasked ? '<div class="hint">当前为掩码显示;留空保存则保持原 Key 不变,需更换请直接粘贴新 Key</div>' : ''}</div>
       <div class="field"><label>支持模型(逗号分隔,对外暴露的模型名)</label>
         <div style="display:flex;gap:8px">
           <input id="f-models" value="${esc((p.models || []).join(', '))}" placeholder="gpt-4o, deepseek-chat">
@@ -121,6 +132,13 @@ Pages.channels = {
       </div>
       <div class="field"><label>专属代理(解决无全局代理访问外网,可选)</label>
         <input id="f-proxy" value="${esc(p.proxy_url || '')}" class="mono" placeholder="http://127.0.0.1:7890 或 socks5://user:pass@host:1080"></div>
+      <div class="form-row">
+        <div class="field"><label>自定义 User-Agent(可选)</label>
+          <input id="f-ua" value="${esc(p.user_agent || '')}" class="mono" placeholder="如 codex_cli_rs/0.20.0">
+          <div class="hint">部分中转站校验客户端指纹,只放行官方客户端 UA,否则返回 401 unauthorized client</div></div>
+      </div>
+      <div class="field"><label>额外请求头(JSON,可选)</label>
+        <textarea id="f-headers" rows="2" class="mono" style="resize:vertical" placeholder='{"X-Custom": "value"}'>${esc(JSON.stringify(p.extra_headers || {}))}</textarea></div>
       <div class="form-row">
         <div class="field"><label>Azure api-version(仅 Azure)</label><input id="f-azver" value="${esc(p.azure_api_version)}"></div>
         <div class="field"><label>健康探测方式</label>
@@ -148,6 +166,7 @@ Pages.channels = {
         $('#f-adapter').value = pr.adapter;
         $('#f-models').value = pr.models.join(', ');
         if (pr.probe_mode) $('#f-probemode').value = pr.probe_mode;
+        if (pr.user_agent) $('#f-ua').value = pr.user_agent;
       }
     };
     // 自动获取模型(L1 免费探测,直连上游模型列表端点,附带元数据)
@@ -242,9 +261,12 @@ Pages.channels = {
         enabled: $('#f-enabled').checked, proxy_url: $('#f-proxy').value.trim(),
         timeout: +$('#f-timeout').value || 0, note: $('#f-note').value.trim(),
         probe_mode: $('#f-probemode').value,
+        user_agent: $('#f-ua').value.trim(),
+        extra_headers: $('#f-headers').value.trim() ? JSON.parse($('#f-headers').value) : {},
         azure_api_version: $('#f-azver').value.trim(),
       };
       if (!body.name || !body.base_url) return toast('名称和 Base URL 必填', 'err');
+      if (isEdit && body.api_key.includes('***')) delete body.api_key;  // 未修改则不发,保持原 Key
       try {
         if (isEdit) await apiPut('/admin/api/channels/' + p.id, body);
         else await apiPost('/admin/api/channels', body);

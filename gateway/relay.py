@@ -7,7 +7,7 @@ import httpx
 from flask import Response
 
 from . import balancer, pricing, quota
-from .adapters.base import AdapterError
+from .adapters.base import AdapterError, apply_channel_headers
 from .adapters.registry import get_adapter
 from .adapters.openai_compat import USAGE_SENTINEL
 from .db import db
@@ -239,6 +239,7 @@ def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_ti
         try:
             req = adapter.build_request(channel, channel.current_api_key(),
                                         upstream_model, kind, openai_body)
+            apply_channel_headers(channel, req.headers)
         except AdapterError as e:
             last_error = str(e)
             continue

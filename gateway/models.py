@@ -85,6 +85,9 @@ class Channel(db.Model):
     pricing_override = db.Column(JSONText, default=dict)
     timeout = db.Column(db.Integer, default=0)                # 0 = 使用全局默认
     note = db.Column(db.String(512), default="")
+    # 自定义请求头:部分中转站做客户端指纹校验,需伪装官方客户端 UA 才能通过
+    user_agent = db.Column(db.String(256), default="")
+    extra_headers = db.Column(JSONText, default=dict)          # 额外请求头 {"X-Foo":"bar"}
 
     # 额外的 azure 参数
     azure_api_version = db.Column(db.String(32), default="2024-10-21")
@@ -125,6 +128,7 @@ class Channel(db.Model):
             "probe_ok": self.probe_ok, "probe_at": self.probe_at,
             "probe_latency": self.probe_latency, "probe_error": self.probe_error,
             "probe_mode": self.probe_mode or "models",
+            "user_agent": self.user_agent or "", "extra_headers": self.extra_headers or {},
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
         if mask_key and d["api_key"]:

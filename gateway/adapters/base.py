@@ -12,6 +12,23 @@ class AdapterError(Exception):
     """适配器不支持的能力(如 Anthropic 不支持图片生成)"""
 
 
+def apply_channel_headers(channel, headers):
+    """应用渠道自定义请求头。
+
+    部分中转站(如 AgentRouter 公益站)做客户端指纹校验,只放行 claude-cli / codex_cli_rs
+    等官方客户端 UA,其他 UA 一律返回 401 unauthorized client detected。
+    通过渠道的 user_agent / extra_headers 配置即可通过。"""
+    ua = (getattr(channel, "user_agent", "") or "").strip()
+    if ua:
+        headers["User-Agent"] = ua
+    extra = getattr(channel, "extra_headers", None) or {}
+    if isinstance(extra, dict):
+        for k, v in extra.items():
+            if k and v is not None:
+                headers[str(k)] = str(v)
+    return headers
+
+
 class UpstreamRequest:
     def __init__(self, url, headers, json_body, stream=False):
         self.url = url
