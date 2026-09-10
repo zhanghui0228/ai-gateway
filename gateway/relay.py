@@ -57,11 +57,16 @@ def _read_request_text(openai_body):
 
 
 def _auto_candidates(api_key_row):
-    """model=auto 时的候选模型序列:
+    """model=auto 时的候选模型序列(最多 auto_max_models 个,默认 5):
     1. 设置中的 auto_models 偏好列表(逗号分隔)
     2. Key 白名单
     3. 所有启用渠道的模型(按渠道优先级降序)
     已按 Key 白名单过滤。"""
+    try:
+        limit = int(Setting.get("auto_max_models", 5))
+    except (TypeError, ValueError):
+        limit = 5
+    limit = max(1, min(limit, 20))
     prefs = [m.strip() for m in (Setting.get("auto_models", "") or "").split(",") if m.strip()]
     allowed = api_key_row.allowed_models or []
     if prefs:
@@ -74,7 +79,7 @@ def _auto_candidates(api_key_row):
             for m in (ch.models or []):
                 if m not in cands:
                     cands.append(m)
-    return cands
+    return cands[:limit]
 
 
 def relay_request(app, api_key_row, model, kind, openai_body):
@@ -83,20 +88,32 @@ def relay_request(app, api_key_row, model, kind, openai_body):
         cands = _auto_candidates(api_key_row)
         if not cands:
             raise RelayError("auto 模式没有可用模型(检查渠道与 auto 偏好设置)", 404)
+        # auto 总时间预算(默认 120s):避免多个慢候选依次超时把客户端拖死
+        try:
+            budget = int(Setting.get("auto_timeout", 120))
+        except (TypeError, ValueError):
+            budget = 120
+        deadline = time.time() + max(15, budget)
         last = None
         for m in cands:
             try:
-                return _relay_one(app, api_key_row, m, kind, openai_body)
+                # 收紧单候选超时,给后续候选留出时间
+                per = max(10, int((deadline - time.time()) / max(1, len(cands))))
+                saved = dict(openai_body)
+                return _relay_one(app, api_key_row, m, kind, openai_body,
+                                 deadline=deadline, per_timeout=per)
             except RelayError as e:
                 # 404=无渠道;502=该模型所有渠道尝试失败 —— 均降级到下一候选模型
                 if e.status not in (404, 502):
                     raise
                 last = e
+                if time.time() >= deadline:
+                    break
         raise last or RelayError("auto 模式没有可用模型", 404)
     return _relay_one(app, api_key_row, model, kind, openai_body)
 
 
-def _relay_one(app, api_key_row, model, kind, openai_body):
+def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_timeout=None):
     stream = bool(openai_body.get("stream"))
     max_retry = quota.get_setting_int("max_retry", 3)
     request_text = _read_request_text(openai_body)
@@ -118,6 +135,8 @@ def _relay_one(app, api_key_row, model, kind, openai_body):
         adapter = get_adapter(channel.adapter)
         upstream_model = channel.real_model(model)
         timeout = _get_timeout(channel)
+        if per_timeout:
+            timeout = min(timeout, per_timeout)   # auto 场景收紧单渠道超时
         client = get_client(channel, timeout)
         tried.append(channel.id)
 

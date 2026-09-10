@@ -581,6 +581,12 @@ Pages.settings = {
         <div class="field"><label>auto 模型偏好(逗号分隔,留空 = 自动扫描全部渠道模型)</label>
           <input id="s-auto" placeholder="如 deepseek-chat, gpt-4o-mini, claude-sonnet-4-5">
           <div class="hint">model=auto 时按此顺序尝试;未命中偏好时回退到 Key 白名单/全部模型</div></div>
+        <div class="form-row">
+          <div class="field"><label>auto 总超时(秒)</label><input id="s-auto-to" type="number">
+            <div class="hint">auto 依次尝试候选模型的总时间预算,超时后返回失败</div></div>
+          <div class="field"><label>auto 最大候选数</label><input id="s-auto-max" type="number">
+            <div class="hint">未配偏好时最多尝试的模型数量(1-20)</div></div>
+        </div>
         <div style="margin-top:16px;display:flex;justify-content:flex-end">
           <button class="btn" id="btn-save-set">保存设置</button></div>
       </div>
@@ -596,12 +602,15 @@ Pages.settings = {
     $('#s-threshold').value = s.breaker_threshold; $('#s-cooldown').value = s.breaker_cooldown;
     $('#s-probe').value = s.probe_interval;
     $('#s-auto').value = s.auto_models || '';
+    $('#s-auto-to').value = s.auto_timeout || 120;
+    $('#s-auto-max').value = s.auto_max_models || 5;
     $('#btn-save-set').onclick = async () => {
       try {
         await apiPost('/admin/api/settings', {
           default_timeout: $('#s-timeout').value, max_retry: $('#s-retry').value,
           breaker_threshold: $('#s-threshold').value, breaker_cooldown: $('#s-cooldown').value,
-          probe_interval: $('#s-probe').value, auto_models: $('#s-auto').value});
+          probe_interval: $('#s-probe').value, auto_models: $('#s-auto').value,
+          auto_timeout: $('#s-auto-to').value, auto_max_models: $('#s-auto-max').value});
         toast('已保存', 'ok');
       } catch (e) { toast(e.message, 'err'); }
     };

@@ -65,6 +65,7 @@ def default_settings():
         "default_timeout": "120", "max_retry": "3",
         "breaker_threshold": "5", "breaker_cooldown": "60",
         "probe_interval": "300",
+        "auto_timeout": "120", "auto_max_models": "5",
     }
     for k, v in defaults.items():
         if Setting.get(k) is None:

@@ -470,7 +470,8 @@ def stats_model_hour_heatmap():
 def get_settings():
     return jsonify({k: Setting.get(k) for k in
                     ("default_timeout", "max_retry", "breaker_threshold",
-                     "breaker_cooldown", "probe_interval", "auto_models")})
+                     "breaker_cooldown", "probe_interval", "auto_models",
+                     "auto_timeout", "auto_max_models")})
 
 
 @admin_bp.route("/settings", methods=["POST"])
@@ -478,7 +479,7 @@ def get_settings():
 def set_settings():
     data = request.get_json(silent=True) or {}
     for k in ("default_timeout", "max_retry", "breaker_threshold",
-              "breaker_cooldown", "probe_interval"):
+              "breaker_cooldown", "probe_interval", "auto_timeout", "auto_max_models"):
         if k in data:
             try:
                 int(data[k])
