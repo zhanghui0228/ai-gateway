@@ -123,6 +123,15 @@ Pages.channels = {
         <input id="f-proxy" value="${esc(p.proxy_url || '')}" class="mono" placeholder="http://127.0.0.1:7890 或 socks5://user:pass@host:1080"></div>
       <div class="form-row">
         <div class="field"><label>Azure api-version(仅 Azure)</label><input id="f-azver" value="${esc(p.azure_api_version)}"></div>
+        <div class="field"><label>健康探测方式</label>
+          <select id="f-probemode">
+            <option value="models" ${(p.probe_mode || 'models') === 'models' ? 'selected' : ''}>模型列表端点(免费,推荐)</option>
+            <option value="chat" ${p.probe_mode === 'chat' ? 'selected' : ''}>聊天端点(max_tokens=1,极少消耗)</option>
+            <option value="off" ${p.probe_mode === 'off' ? 'selected' : ''}>不探测</option>
+          </select>
+          <div class="hint">站点禁用 /v1/models 时(如 AgentRouter)选聊天端点</div></div>
+      </div>
+      <div class="form-row">
         <div class="field" style="display:flex;align-items:end;padding-bottom:2px">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
             <input type="checkbox" id="f-enabled" ${p.enabled ? 'checked' : ''}> 启用渠道</label></div>
@@ -156,7 +165,10 @@ Pages.channels = {
           adapter: $('#f-adapter').value,
         });
         if (!r.ok) { hint.textContent = '失败: ' + (r.error || ''); hint.style.color = 'var(--red)'; return; }
-        hint.textContent = `获取成功(${r.models.length} 个模型,延迟 ${r.latency_ms}ms);勾选后保存,元数据与参考价将写入模型单价表`;
+        hint.style.color = r.warning ? 'var(--amber)' : '';
+        hint.textContent = r.warning
+          ? `⚠ ${r.warning};已获取 ${r.models.length} 个模型,延迟 ${r.latency_ms}ms`
+          : `获取成功(${r.models.length} 个模型,延迟 ${r.latency_ms}ms);勾选后保存,元数据与参考价将写入模型单价表`;
         if (!r.models.length) { box.innerHTML = '<span class="dim" style="font-size:12px">上游未返回模型列表</span>'; return; }
         fetchedMeta = r.models;
         const withMeta = r.models.filter(m => m.source);
@@ -228,6 +240,7 @@ Pages.channels = {
         weight: +$('#f-w').value || 1, priority: +$('#f-pri').value || 0,
         enabled: $('#f-enabled').checked, proxy_url: $('#f-proxy').value.trim(),
         timeout: +$('#f-timeout').value || 0, note: $('#f-note').value.trim(),
+        probe_mode: $('#f-probemode').value,
         azure_api_version: $('#f-azver').value.trim(),
       };
       if (!body.name || !body.base_url) return toast('名称和 Base URL 必填', 'err');

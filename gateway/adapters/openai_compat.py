@@ -38,6 +38,22 @@ class OpenAICompatAdapter(BaseAdapter):
             headers["Authorization"] = "Bearer " + api_key
         return UpstreamRequest(base + path, headers, body, stream)
 
+    def models_fallback_request(self, channel):
+        """兜底模型清单:new-api / one-api 系中转站的公开定价接口,无需鉴权。
+        用于站点禁用 /v1/models(如 AgentRouter 公益站)时仍能自动获取模型。"""
+        base = (channel.base_url or "").rstrip("/")
+        return [(base + "/api/pricing", {})]
+
+    @staticmethod
+    def parse_fallback_models(data):
+        """new-api / one-api 定价接口格式:{"data":[{"model_name": "...", ...}]}"""
+        out = []
+        for m in (data.get("data") or []):
+            name = m.get("model_name") or m.get("id")
+            if name and name not in out:
+                out.append(name)
+        return out
+
     def transform_stream(self, sse_lines):
         """openai 兼容流几乎直通,只透传并抓取 usage chunk(含缓存命中)"""
         usage = {}

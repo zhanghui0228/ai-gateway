@@ -216,3 +216,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ===== AIGateway 项目专用 =====
+# 运行时数据:数据库与密钥(含渠道 API Key,严禁入库)
+data/
+
+# 本地工具与计划文件
+.zcode/
+
+# 系统文件
+Thumbs.db
+.DS_Store

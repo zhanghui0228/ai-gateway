@@ -94,6 +94,8 @@ class Channel(db.Model):
     probe_at = db.Column(db.String(32), default="")
     probe_latency = db.Column(db.Integer, default=0)
     probe_error = db.Column(db.String(256), default="")
+    # 探测方式:models=模型列表端点(免费) / chat=聊天端点(max_tokens=1,消耗极少) / off=不探测
+    probe_mode = db.Column(db.String(16), default="models")
 
     created_at = db.Column(db.DateTime, default=utcnow)
 
@@ -122,6 +124,7 @@ class Channel(db.Model):
             "azure_api_version": self.azure_api_version,
             "probe_ok": self.probe_ok, "probe_at": self.probe_at,
             "probe_latency": self.probe_latency, "probe_error": self.probe_error,
+            "probe_mode": self.probe_mode or "models",
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
         if mask_key and d["api_key"]:

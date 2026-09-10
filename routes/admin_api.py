@@ -84,6 +84,7 @@ def create_channel():
         enabled=bool(data.get("enabled", True)), proxy_url=data.get("proxy_url", ""),
         pricing_override=data.get("pricing_override") or {},
         timeout=int(data.get("timeout", 0)), note=data.get("note", ""),
+        probe_mode=data.get("probe_mode") or "models",
         azure_api_version=data.get("azure_api_version", "2024-10-21"))
     db.session.add(ch)
     db.session.commit()
@@ -99,7 +100,7 @@ def update_channel(cid):
     data = request.get_json(silent=True) or {}
     old_proxy = ch.proxy_url
     for field in ("name", "preset", "adapter", "base_url", "api_key", "proxy_url", "note",
-                  "azure_api_version"):
+                  "azure_api_version", "probe_mode"):
         if field in data:
             setattr(ch, field, data[field] or "" if field != "name" else data[field])
     for field in ("models", "model_mapping", "pricing_override"):
@@ -402,23 +403,24 @@ def fetch_models():
         ch.adapter = data.get("adapter") or "openai_compat"
         ch.id = 0
         ch.models, ch.model_mapping, ch.pricing_override = [], {}, {}
+        ch.timeout = 0
     if not ch.base_url:
         return jsonify({"error": "base_url 必填"}), 400
 
-    ok, latency, err, models, upstream_meta = probe_mod.probe_channel(ch)
+    ok, latency, err, models, upstream_meta, source, warning = probe_mod.fetch_models(ch)
     if not ok:
-        return jsonify({"ok": False, "error": err or "探测失败"}), 200
+        return jsonify({"ok": False, "error": err or "获取模型失败"}), 200
 
     # 合并元数据:上游返回优先,内置知识库兜底
     from gateway.model_meta import lookup
     result = []
     for m in models:
         info = dict(upstream_meta.get(m) or {})
-        source = "upstream" if info else ""
+        src = "upstream" if info else ""
         if not info:
             kb = lookup(m)
             if kb:
-                info, source = kb, "builtin"
+                info, src = kb, "builtin"
         result.append({
             "id": m,
             "context": info.get("context"),
@@ -426,9 +428,10 @@ def fetch_models():
             "input_price": info.get("input_price"),
             "output_price": info.get("output_price"),
             "currency": info.get("currency", "CNY"),
-            "source": source,
+            "source": src,
         })
-    return jsonify({"ok": True, "latency_ms": latency, "models": result})
+    return jsonify({"ok": True, "latency_ms": latency, "models": result,
+                    "list_source": source, "warning": warning})
 
 
 # ---------- 热点统计 ----------

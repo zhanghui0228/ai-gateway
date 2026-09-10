@@ -68,6 +68,16 @@ class BaseAdapter:
         """解析模型列表响应,返回模型名列表"""
         return [m.get("id") for m in (data.get("data") or []) if m.get("id")]
 
+    def models_fallback_request(self, channel):
+        """备用模型清单来源(上游禁用 /v1/models 时使用)。
+        返回 [(url, headers)];默认无。"""
+        return []
+
+    @staticmethod
+    def parse_fallback_models(data):
+        """解析备用来源的模型清单,返回模型名列表"""
+        return []
+
     @staticmethod
     def parse_models_meta(data):
         """解析模型列表响应中自带的上游元数据(OpenRouter 风格)。
