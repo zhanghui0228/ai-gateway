@@ -52,16 +52,18 @@ def overview(days=1):
 
 
 def hourly_trend(days=1):
-    """24小时逐小时调用量/tokens/费用"""
+    """24小时逐小时调用量/tokens/费用(北京时间 UTC+8)"""
     start, _ = _range_or_default(days=days)
+    # SQLite 存储的是 UTC,用 +8 hours 转为北京时间后再按小时聚合
+    bj = func.strftime("%Y-%m-%dT%H:00", UsageLog.created_at, "+8 hours")
     rows = (db.session.query(
-                func.strftime("%Y-%m-%dT%H:00", UsageLog.created_at),
+                bj,
                 func.count(UsageLog.id),
                 func.coalesce(func.sum(UsageLog.total_tokens), 0),
                 func.coalesce(func.sum(UsageLog.cost), 0))
             .filter(UsageLog.created_at >= start)
-            .group_by(func.strftime("%Y-%m-%dT%H:00", UsageLog.created_at))
-            .order_by(func.strftime("%Y-%m-%dT%H:00", UsageLog.created_at)).all())
+            .group_by(bj)
+            .order_by(bj).all())
     return [{"hour": r[0], "calls": r[1], "tokens": int(r[2]),
              "cost": round(float(r[3]), 4)} for r in rows]
 
@@ -145,16 +147,15 @@ def hot_models(days=7, limit=10):
 
 
 def hourly_heatmap(days=7):
-    """调用时段热点:7x24 矩阵 [weekday][hour] = calls
+    """调用时段热点:7x24 矩阵 [weekday][hour] = calls(北京时间 UTC+8)
     weekday: 0=周一 ... 6=周日"""
     start, _ = _range_or_default(days=days)
-    rows = (db.session.query(
-                func.strftime("%w", UsageLog.created_at),       # 周日=0
-                func.strftime("%H", UsageLog.created_at),
-                func.count(UsageLog.id))
+    # +8 hours 转为北京时间后再聚合星期几与小时
+    bj_weekday = func.strftime("%w", UsageLog.created_at, "+8 hours")
+    bj_hour = func.strftime("%H", UsageLog.created_at, "+8 hours")
+    rows = (db.session.query(bj_weekday, bj_hour, func.count(UsageLog.id))
             .filter(UsageLog.created_at >= start)
-            .group_by(func.strftime("%w", UsageLog.created_at),
-                      func.strftime("%H", UsageLog.created_at)).all())
+            .group_by(bj_weekday, bj_hour).all())
     matrix = [[0] * 24 for _ in range(7)]
     for w, h, cnt in rows:
         idx = (int(w) - 1) % 7    # sqlite 周日=0 -> 转为 周一=0
@@ -163,12 +164,12 @@ def hourly_heatmap(days=7):
 
 
 def model_hour_heatmap(days=7, limit_models=8):
-    """模型 x 24小时 调用热点(哪些模型在什么时段被调用)"""
+    """模型 x 24小时 调用热点(哪些模型在什么时段被调用, 北京时间 UTC+8)"""
     start, _ = _range_or_default(days=days)
-    rows = (db.session.query(UsageLog.model, func.strftime("%H", UsageLog.created_at),
-                             func.count(UsageLog.id))
+    bj_hour = func.strftime("%H", UsageLog.created_at, "+8 hours")
+    rows = (db.session.query(UsageLog.model, bj_hour, func.count(UsageLog.id))
             .filter(UsageLog.created_at >= start)
-            .group_by(UsageLog.model, func.strftime("%H", UsageLog.created_at)).all())
+            .group_by(UsageLog.model, bj_hour).all())
     counts = {}
     for m, h, cnt in rows:
         counts.setdefault(m, {})[int(h)] = cnt
