@@ -1,0 +1,20 @@
+services:
+  aigateway:
+    build: .
+    image: aigateway:latest
+    container_name: aigateway
+    restart: unless-stopped
+    ports:
+      - "5100:5100"
+    volumes:
+      # 数据库与密钥持久化,重建容器不丢配置
+      - aigateway-data:/app/data
+    environment:
+      - GW_ADMIN_PASSWORD=${GW_ADMIN_PASSWORD:-admin123}
+      - TZ=Asia/Shanghai
+    # 容器内访问宿主机代理时,把宿主 IP 传给渠道代理配置用(host.docker.internal 由 Docker Desktop 自动解析)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  aigateway-data:

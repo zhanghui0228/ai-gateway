@@ -75,6 +75,21 @@ python -m venv .venv
 .venv/Scripts/python app.py --port 5100 --dev
 ```
 
+### Docker 部署(推荐)
+
+依赖 Docker Desktop / 任意 Docker 环境,一条命令启动:
+
+```bash
+docker compose up -d --build
+```
+
+- 服务地址:http://127.0.0.1:5100
+- 数据库与密钥持久化在命名卷 `aigateway-data`,`docker compose down` 后配置不丢失
+- 初始管理员密码可用环境变量覆盖(仅首次启动生效):`GW_ADMIN_PASSWORD=xxx docker compose up -d --build`
+- 常用命令:`docker compose logs -f` 看日志、`docker compose down` 停止、`docker compose up -d --build` 更新代码后重建
+
+> **容器内使用宿主机代理的注意事项**:渠道代理若指向宿主机上的 Clash 等软件,不要填 `127.0.0.1`(容器内指向容器自身),应填 `http://host.docker.internal:7890`(compose 已自动配置该主机名)。
+
 | 页面 | 地址 | 说明 |
 |---|---|---|
 | 管理控制台 | http://127.0.0.1:5100 | 默认密码 `admin123`,**登录后请修改** |
@@ -165,7 +180,9 @@ curl -N http://127.0.0.1:5100/v1/chat/completions \
 ```
 AIGateway/
 ├── app.py                  入口:create_app、SQLite 迁移、探测调度器启动、waitress/--dev
-├── config.py               全局配置(密钥、默认参数)
+├── config.py               全局配置(密钥、默认参数、GW_ADMIN_PASSWORD 环境变量)
+├── Dockerfile              Docker 镜像(python:3.12-slim)
+├── docker-compose.yml      一键部署(含数据卷、host.docker.internal)
 ├── requirements.txt
 ├── gateway/                核心逻辑
 │   ├── db.py               SQLAlchemy 实例

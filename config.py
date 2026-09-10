@@ -20,9 +20,9 @@ SQLALCHEMY_DATABASE_URI = "sqlite:///" + os.path.join(DATA_DIR, "gateway.db").re
 SQLALCHEMY_TRACK_MODIFICATIONS = False
 JSON_AS_ASCII = False
 
-# 默认管理员(首次启动初始化,可在控制台修改密码)
+# 默认管理员(首次启动初始化,可在控制台修改密码;可用环境变量 GW_ADMIN_PASSWORD 覆盖)
 DEFAULT_ADMIN_USER = "admin"
-DEFAULT_ADMIN_PASSWORD = "admin123"
+DEFAULT_ADMIN_PASSWORD = os.environ.get("GW_ADMIN_PASSWORD", "admin123")
 
 # 转发默认参数(可在控制台设置中覆盖)
 DEFAULT_TIMEOUT = 120          # 渠道请求超时(秒)
