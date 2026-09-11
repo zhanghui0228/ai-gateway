@@ -345,7 +345,7 @@ Pages.channels = {
         // 多模型结果用弹窗展示
         const rows = Object.entries(r.models).map(([m, s]) =>
           `<tr><td class="mono" style="font-size:12px">${esc(m)}</td>` +
-          `<td>${s.ok ? '<span class="tag ok">可用</span>' : '<span class="tag err">不可用</span></td>` +
+          `<td>${s.ok ? '<span class="tag ok">可用</span>' : '<span class="tag err">不可用</span>'}</td>` +
           `<td class="mono">${s.latency_ms || '-'} ms</td>` +
           `<td style="font-size:11px;color:#aaa;max-width:300px;word-break:break-all">${esc(s.error || '-')}</td>` +
           `<td class="dim" style="font-size:10px">${s.tested_at ? fmtTime(s.tested_at) : '-'}</td></tr>`
