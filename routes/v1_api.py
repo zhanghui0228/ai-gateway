@@ -5,6 +5,7 @@ from flask import Blueprint, jsonify, request
 
 from gateway import quota, relay
 from gateway.auth import api_key_required
+from gateway.model_degradation import is_degraded
 from gateway.models import Channel, ModelPrice
 
 v1_bp = Blueprint("v1", __name__, url_prefix="/v1")
@@ -21,7 +22,8 @@ def list_models():
     allowed = api_key.allowed_models or []
     data = [{"id": m, "object": "model", "owned_by": "gateway",
              "permission": [], "root": m, "parent": None}
-            for m in sorted(models.keys()) if not allowed or m in allowed]
+            for m in sorted(models.keys())
+            if (not allowed or m in allowed) and not is_degraded(m)]
     data.insert(0, {"id": "auto", "object": "model", "owned_by": "gateway",
                     "permission": [], "root": "auto", "parent": None})
     return jsonify({"object": "list", "data": data})
