@@ -365,6 +365,82 @@ Pages.channels = {
   },
 };
 
+/* ================= 模型状态 ================= */
+Pages.model_status = {
+  data: null,
+  filter: '',
+  async render(main) {
+    main.innerHTML = `
+      <div class="page-head"><h2>模型状态</h2>
+        <div class="actions"><button class="btn ghost" id="btn-ms-refresh">⟳ 刷新</button></div></div>
+      <div class="panel" style="padding:10px 14px">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+          <input id="ms-search" placeholder="搜索模型名..." style="width:240px;padding:5px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px">
+          <span class="dim" style="font-size:12px" id="ms-summary"></span>
+        </div>
+        <div style="overflow-x:auto;max-height:calc(100vh - 180px);overflow-y:auto">
+          <table class="gw-table" id="ms-table"></table>
+        </div>
+      </div>`;
+    $('#btn-ms-refresh').onclick = () => this.refresh();
+    $('#ms-search').oninput = (e) => { this.filter = e.target.value.toLowerCase(); this._renderTable(); };
+    await this.refresh();
+  },
+  async refresh() {
+    try {
+      const d = await api('/admin/api/model_status');
+      this.data = d;
+      this._renderTable();
+    } catch (e) { toast(e.message, 'err'); }
+  },
+  _renderTable() {
+    if (!this.data) return;
+    const { models, channels, status } = this.data;
+    const tab = $('#ms-table');
+    const filtered = this.filter ? models.filter(m => m.toLowerCase().includes(this.filter)) : models;
+
+    // 汇总表头: 模型名 | 可用/总数 | 各渠道
+    const chanCols = channels.map(c => {
+      const disabled = !c.enabled || c.breaker === 'open' ? ' <span class="dim" style="font-size:10px">(停用)</span>' : '';
+      return `<th style="min-width:90px;text-align:center" title="${esc(c.name)}${c.breaker === 'open' ? ' [熔断]' : ''}">${esc(c.name.length > 8 ? c.name.slice(0, 8) + '..' : c.name)}${disabled}</th>`;
+    }).join('');
+
+    // 数据行
+    const rows = filtered.map(m => {
+      const entries = status[m] || [];
+      const total = entries.length;
+      const okCount = entries.filter(e => e.ok === true).length;
+      const cells = channels.map(ch => {
+        const e = entries.find(x => x.channel_id === ch.id);
+        if (!e || e.ok === undefined || e.ok === null) {
+          return `<td style="text-align:center"><span class="dim" style="font-size:11px">未测</span></td>`;
+        }
+        if (e.ok === true) {
+          return `<td style="text-align:center"><span class="tag ok" style="padding:1px 5px;font-size:10px" title="${esc(e.error || '')}">✓ ${e.latency_ms || '-'}ms</span></td>`;
+        }
+        const errHint = e.error ? ` title="${esc(e.error)}"` : '';
+        return `<td style="text-align:center"${errHint}><span class="tag err" style="padding:1px 5px;font-size:10px">✗ ${e.status || 'err'}</span></td>`;
+      }).join('');
+      const ratioColor = okCount === total ? 'ok' : okCount > 0 ? 'warn' : 'err';
+      return `<tr>
+        <td class="mono" style="font-size:12px;font-weight:600">${esc(m)}</td>
+        <td style="text-align:center"><span class="tag ${ratioColor}" style="padding:1px 5px;font-size:10px">${okCount}/${total}</span></td>
+        ${cells}</tr>`;
+    }).join('');
+
+    tab.innerHTML = `<thead><tr>
+      <th style="min-width:140px">模型</th>
+      <th style="min-width:60px;text-align:center">可用</th>
+      ${chanCols}
+    </tr></thead><tbody>${rows || '<tr><td colspan="' + (channels.length + 2) + '"><div class="empty-tip">暂无数据</div></td></tr>'}</tbody>`;
+
+    // 汇总信息
+    const totalModels = models.length;
+    const testedModels = models.filter(m => (status[m] || []).some(e => e.ok !== null && e.ok !== undefined)).length;
+    $('#ms-summary').textContent = `共 ${totalModels} 个模型, ${channels.length} 个渠道, ${testedModels} 个已探测${this.filter ? ` (筛选: ${filtered.length})` : ''}`;
+  },
+};
+
 /* ================= API Key ================= */
 Pages.keys = {
   async render(main) {

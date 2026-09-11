@@ -291,6 +291,33 @@ def list_model_degradation():
     return jsonify(model_degradation.get_status())
 
 
+# ---------- 模型状态总览 ==========
+@admin_bp.route("/model_status", methods=["GET"])
+@admin_required
+def model_status_api():
+    """按模型维度汇总各渠道的可用状态(模型 × 渠道矩阵)"""
+    channels = Channel.query.order_by(Channel.priority.desc(), Channel.id).all()
+    by_model = {}
+    chan_list = []
+    for ch in channels:
+        state, _ = balancer.breaker_info(ch)
+        chan_list.append({"id": ch.id, "name": ch.name, "enabled": ch.enabled, "breaker": state})
+        for m in (ch.models or []):
+            entry = {"channel_id": ch.id, "channel_name": ch.name,
+                     "enabled": ch.enabled, "breaker": state}
+            ms = (ch.model_status or {}).get(m)
+            if ms:
+                entry.update(ms)
+            else:
+                entry["ok"] = None  # 未探测
+            by_model.setdefault(m, []).append(entry)
+    return jsonify({
+        "models": sorted(by_model.keys()),
+        "channels": chan_list,
+        "status": by_model,
+    })
+
+
 @admin_bp.route("/model_degradation/reset", methods=["POST"])
 @admin_required
 def reset_model_degradation():

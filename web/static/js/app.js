@@ -2,7 +2,7 @@
 let currentPage = 'dashboard';
 let refreshTimer = null;
 
-const PAGES = ['dashboard', 'channels', 'keys', 'prices', 'usage', 'logs', 'settings'];
+const PAGES = ['dashboard', 'channels', 'model_status', 'keys', 'prices', 'usage', 'logs', 'settings'];
 
 /* 解析当前路由:返回 {page, sub} */
 function parseHash() {
