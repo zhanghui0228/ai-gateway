@@ -23,6 +23,7 @@ def _migrate_columns(app):
                          ("model_status", "TEXT")],
             "model_prices": [("context_window", "INTEGER"), ("max_output", "INTEGER")],
             "usage_logs": [("cache_read_tokens", "BIGINT"), ("cache_creation_tokens", "BIGINT")],
+            "call_logs": [("cache_hit", "BOOLEAN")],
         }
         with db.engine.begin() as conn:
             for table, adds in migrations.items():
@@ -48,6 +49,11 @@ def create_app():
             conn.execute(text("PRAGMA journal_mode=WAL"))
             conn.commit()
         pricing.refresh_cache()
+        # 从 SQLite 加载未过期缓存到内存 LRU
+        from gateway import cache as cache_mod
+        n = cache_mod.cache.warm_up()
+        if n:
+            print(f"  响应缓存已加载 {n} 条热缓存")
     init_admin(app)
     with app.app_context():
         default_settings()
@@ -57,6 +63,8 @@ def create_app():
     # 渠道定时健康探测(L1 免费模型列表探测)
     from gateway import probe
     probe.start_scheduler(app)
+    # 注册缓存过期清理(随探测调度器周期执行)
+    probe.register_cleanup(cache_mod.cache.cleanup_expired)
 
     from routes.admin_api import admin_bp
     from routes.screen_api import screen_bp

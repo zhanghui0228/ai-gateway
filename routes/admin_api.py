@@ -742,7 +742,9 @@ def get_settings():
                     ("default_timeout", "max_retry", "breaker_threshold",
                      "breaker_cooldown", "probe_interval", "auto_models",
                      "auto_timeout", "auto_max_models",
-                     "log_bodies", "log_body_max", "log_retention_days")})
+                     "log_bodies", "log_body_max", "log_retention_days",
+                     "cache_enabled", "cache_ttl",
+                     "cache_max_memory", "cache_max_sqlite")})
 
 
 @admin_bp.route("/settings", methods=["POST"])
@@ -760,4 +762,72 @@ def set_settings():
             Setting.set(k, data[k])
     if "auto_models" in data:
         Setting.set("auto_models", data["auto_models"] or "")
+    # 缓存设置
+    for ck in ("cache_enabled", "cache_ttl", "cache_max_memory", "cache_max_sqlite"):
+        if ck in data:
+            Setting.set(ck, str(data[ck]))
+    return jsonify({"ok": True})
+
+
+# ---------- 缓存管理 ----------
+
+@admin_bp.route("/cache/stats", methods=["GET"])
+@admin_required
+def cache_stats():
+    """缓存统计: 命中率/命中数/未命中数/节省费用/条目数"""
+    from gateway import cache as cache_mod
+    st = cache_mod.cache.stats()
+    # 计算累计节省费用
+    from sqlalchemy import func
+    from gateway.models import CacheEvent
+    saved = db.session.query(
+        func.coalesce(func.sum(CacheEvent.saved_cost), 0)).scalar()
+    st["total_saved_cost"] = round(float(saved or 0), 4)
+    return jsonify(st)
+
+
+@admin_bp.route("/cache/trend", methods=["GET"])
+@admin_required
+def cache_trend():
+    """缓存命中趋势(按小时)"""
+    from gateway import cache as cache_mod
+    hours = request.args.get("hours", 24, type=int)
+    return jsonify(cache_mod.cache.hit_trend(hours=hours))
+
+
+@admin_bp.route("/cache/recent", methods=["GET"])
+@admin_required
+def cache_recent():
+    """最近缓存命中记录"""
+    from gateway import cache as cache_mod
+    limit = request.args.get("limit", 50, type=int)
+    return jsonify(cache_mod.cache.recent_hits(limit=limit))
+
+
+@admin_bp.route("/cache", methods=["DELETE"])
+@admin_required
+def cache_clear():
+    """清空缓存"""
+    from gateway import cache as cache_mod
+    cache_mod.cache.clear()
+    return jsonify({"ok": True})
+
+
+@admin_bp.route("/cache/config", methods=["GET"])
+@admin_required
+def cache_get_config():
+    """查看缓存配置"""
+    keys = ("cache_enabled", "cache_ttl", "cache_max_memory", "cache_max_sqlite")
+    return jsonify({k: Setting.get(k) for k in keys})
+
+
+@admin_bp.route("/cache/config", methods=["PUT"])
+@admin_required
+def cache_set_config():
+    """更新缓存配置"""
+    from flask import request as _rq
+    data = _rq.get_json(silent=True) or {}
+    for ck in ("cache_enabled", "cache_ttl", "cache_max_memory", "cache_max_sqlite"):
+        if ck in data:
+            Setting.set(ck, str(data[ck]))
     return jsonify({"ok": True})

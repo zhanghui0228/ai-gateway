@@ -32,3 +32,8 @@ BREAKER_COOLDOWN = 60          # 熔断冷却(秒),冷却后进入半开放行�
 
 # 大屏 SSE 心跳间隔(秒)
 SSE_HEARTBEAT = 15
+
+# 响应缓存默认设置(可在控制台设置中覆盖)
+CACHE_DEFAULT_TTL = 300        # 缓存有效期(秒),chat/completions 默认 5 分钟
+CACHE_MAX_MEMORY = 200         # 内存 LRU 最大条目数
+CACHE_MAX_SQLITE = 10000       # SQLite 持久化最大缓存条目数

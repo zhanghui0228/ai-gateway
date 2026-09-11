@@ -7,7 +7,7 @@ import uuid
 import httpx
 from flask import Response
 
-from . import balancer, model_degradation, pricing, quota
+from . import balancer, model_degradation, pricing, quota, cache as cache_mod
 from .adapters.base import AdapterError, apply_channel_headers
 from .adapters.registry import get_adapter
 from .adapters.openai_compat import USAGE_SENTINEL
@@ -110,7 +110,8 @@ def _truncate(text, limit=None):
 
 def write_call_log(request_id, key_row, channel, kind, model_requested, model_actual,
                    status_code, success, latency_ms, retries, pt, ct, cache_read, cost,
-                   is_stream, client_ip, user_agent, request_body, response_body, error=""):
+                   is_stream, client_ip, user_agent, request_body, response_body, error="",
+                   cache_hit=False):
     """写入调用日志(尊重"记录内容"设置)"""
     if not _log_bodies_enabled():
         request_body = response_body = ""
@@ -128,6 +129,7 @@ def write_call_log(request_id, key_row, channel, kind, model_requested, model_ac
         latency_ms=latency_ms, retries=retries,
         prompt_tokens=pt, completion_tokens=ct, total_tokens=pt + ct,
         cache_read_tokens=cache_read, cost=cost,
+        cache_hit=bool(cache_hit),
         client_ip=client_ip, user_agent=user_agent,
         request_body=request_body or "", response_body=response_body or "",
         error=(error or "")[:500])
@@ -213,6 +215,34 @@ def relay_request(app, api_key_row, model, kind, openai_body):
     return _relay_one(app, api_key_row, model, kind, openai_body)
 
 
+def _serve_cached(cached, ctx, model, kind, started, cache_key, api_key_row):
+    """构造缓存命中响应: 返回缓存的响应体,记录日志(cost=0)"""
+    latency_ms = int((time.time() - started) * 1000)
+    resp_body = cached.response_body
+    # 记录 CallLog(标记 cache_hit=True, cost=0)
+    _finish_success(
+        api_key_row=api_key_row, channel=None, model=model,
+        pt=cached.prompt_tokens, ct=cached.completion_tokens,
+        total=cached.prompt_tokens + cached.completion_tokens,
+        cost=0.0, latency_ms=latency_ms, is_stream=False,
+        estimated=False, attempt=0,
+        cache_read=0, cache_creation=0,
+        kind=kind, ctx=ctx, response_text=resp_body[:2000],
+        cache_hit=True)
+    # 记录 CacheEvent(用于趋势图和最近记录)
+    try:
+        from . import pricing
+        saved = pricing.calc_cost(model, cached.prompt_tokens, cached.completion_tokens, None)
+    except Exception:
+        saved = 0.0
+    cache_mod.cache.record_hit_event(
+        cache_key=cache_key, model=model, kind=kind,
+        prompt_tokens=cached.prompt_tokens, completion_tokens=cached.completion_tokens,
+        saved_cost=saved)
+    return Response(resp_body, status=200, content_type="application/json",
+                    headers={"X-Cache": "HIT", "X-Request-Id": ctx.get("request_id", "")})
+
+
 def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_timeout=None):
     stream = bool(openai_body.get("stream"))
     max_retry = quota.get_setting_int("max_retry", 3)
@@ -230,6 +260,21 @@ def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_ti
     ctx = {"request_id": request_id, "client_ip": client_ip, "user_agent": user_agent,
            "request_body": request_body_text, "model_requested": model,
            "is_stream": stream}
+
+    # ---------- 响应缓存查找(仅非流式) ----------
+    cache_key = None
+    if not stream and cache_mod.should_cache(kind, openai_body) and cache_mod.cache_enabled():
+        # 允许客户端通过请求头强制跳过缓存
+        try:
+            from flask import has_request_context, request as _req
+            bypass = has_request_context() and _req.headers.get("X-Cache-Bypass") == "1"
+        except Exception:
+            bypass = False
+        if not bypass:
+            cache_key = cache_mod.build_cache_key(kind, model, openai_body)
+            cached = cache_mod.cache.get(cache_key)
+            if cached:
+                return _serve_cached(cached, ctx, model, kind, started, cache_key, api_key_row)
 
     candidates = balancer.pick_candidates(model, exclude_ids=set())
     if not candidates:
@@ -314,14 +359,18 @@ def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_ti
             pt, ct, estimated = quota.calc_and_get_usage(model, channel, {}, request_text, "")
         cost = pricing.calc_cost(model, pt, ct, channel)
         total = pt + ct
+        resp_text = json.dumps(openai_json, ensure_ascii=False)
         _finish_success(api_key_row, channel, model, pt, ct, total, cost,
                         int((time.time() - started) * 1000), False, estimated, attempt,
                         cache_read=cache.get("cache_read", 0),
                         cache_creation=cache.get("cache_creation", 0),
-                        kind=kind, ctx=ctx,
-                        response_text=json.dumps(openai_json, ensure_ascii=False))
-        return Response(json.dumps(openai_json, ensure_ascii=False),
-                        status=200, content_type="application/json",
+                        kind=kind, ctx=ctx, response_text=resp_text)
+        # 写入响应缓存(非流式 + 支持缓存的 kind)
+        if cache_key:
+            cache_mod.cache.put(
+                cache_key=cache_key, kind=kind, model=model,
+                response_body=resp_text, prompt_tokens=pt, completion_tokens=ct)
+        return Response(resp_text, status=200, content_type="application/json",
                         headers={"X-Request-Id": request_id})
 
     # 所有候选渠道尝试失败:记录失败日志便于排查
@@ -425,22 +474,24 @@ def _do_stream(app, api_key_row, channel, adapter, client, req,
 
 def _finish_success(api_key_row, channel, model, pt, ct, total, cost,
                     latency_ms, is_stream, estimated, attempt,
-                    cache_read=0, cache_creation=0, kind="", ctx=None, response_text=""):
+                    cache_read=0, cache_creation=0, kind="", ctx=None, response_text="",
+                    cache_hit=False):
     if total > 0:
         quota.consume(api_key_row, total)
-    quota.log_usage(
-        key_id=api_key_row.id, key_name=api_key_row.name or api_key_row.key[:8],
-        channel_id=channel.id, channel_name=channel.name, model=model,
-        prompt_tokens=pt, completion_tokens=ct, total_tokens=total, cost=cost,
-        cache_read_tokens=cache_read, cache_creation_tokens=cache_creation,
-        latency_ms=latency_ms, status_code=200, success=True, is_stream=is_stream,
-        estimated=estimated, retries=attempt, error="")
+    if api_key_row:
+        quota.log_usage(
+            key_id=api_key_row.id, key_name=api_key_row.name or api_key_row.key[:8],
+            channel_id=channel.id if channel else None, channel_name=channel.name if channel else "",
+            model=model, prompt_tokens=pt, completion_tokens=ct, total_tokens=total, cost=cost,
+            cache_read_tokens=cache_read, cache_creation_tokens=cache_creation,
+            latency_ms=latency_ms, status_code=200, success=True, is_stream=is_stream,
+            estimated=estimated, retries=attempt, error="")
     ctx = ctx or {}
     write_call_log(ctx.get("request_id", ""), api_key_row, channel, kind,
                    ctx.get("model_requested", model), model, 200, True, latency_ms,
                    attempt, pt, ct, cache_read, cost, is_stream,
                    ctx.get("client_ip", ""), ctx.get("user_agent", ""),
-                   ctx.get("request_body", ""), response_text)
+                   ctx.get("request_body", ""), response_text, cache_hit=cache_hit)
 
 
 def _log_failure(api_key_row, channel, model, status_code, error, attempt,

@@ -2,7 +2,7 @@
 let currentPage = 'dashboard';
 let refreshTimer = null;
 
-const PAGES = ['dashboard', 'channels', 'model_status', 'keys', 'prices', 'usage', 'logs', 'settings'];
+const PAGES = ['dashboard', 'channels', 'model_status', 'keys', 'prices', 'usage', 'cache', 'logs', 'settings'];
 
 /* 解析当前路由:返回 {page, sub} */
 function parseHash() {
@@ -50,7 +50,7 @@ async function switchPage(name, write, sub) {
   await Pages[name].render($('#main'));
   if (write) writeHash(name, sub);
   // 总览/统计/日志页自动刷新
-  if (name === 'dashboard' || name === 'usage' || name === 'logs') {
+  if (name === 'dashboard' || name === 'usage' || name === 'logs' || name === 'cache') {
     refreshTimer = setInterval(async () => {
       if (currentPage === name) await Pages[name].refresh();
     }, 30000);

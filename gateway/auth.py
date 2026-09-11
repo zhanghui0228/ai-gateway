@@ -67,6 +67,8 @@ def default_settings():
         "probe_interval": "300",
         "auto_timeout": "120", "auto_max_models": "5",
         "log_bodies": "1", "log_body_max": "2000", "log_retention_days": "7",
+        "cache_enabled": "1", "cache_ttl": "300",
+        "cache_max_memory": "200", "cache_max_sqlite": "10000",
     }
     for k, v in defaults.items():
         if Setting.get(k) is None:

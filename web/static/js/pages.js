@@ -702,7 +702,7 @@ Pages.usage = {
         <div id="u-log-pagination" style="display:flex;align-items:center;gap:12px;margin-bottom:8px"></div>
         <table class="gw-table"><thead><tr>
           <th>时间</th><th>Key</th><th>渠道</th><th>模型</th><th>输入tk</th><th>输出tk</th>
-          <th>缓存命中</th><th>总tk</th><th>费用</th><th>延迟</th><th>状态</th><th>错误</th>
+          <th>缓存</th><th>总tk</th><th>费用</th><th>延迟</th><th>状态</th><th>错误</th>
         </tr></thead><tbody id="log-tbody"></tbody></table>
       </div>`;
     $('#u-days').onchange = () => { this.logState.page = 1; this.refresh(); };
@@ -822,9 +822,11 @@ Pages.usage = {
       <td class="mono" style="font-size:12px">${esc(l.model || '-')}</td>
       <td class="mono">${fmtTokens(l.prompt_tokens)}</td>
       <td class="mono">${fmtTokens(l.completion_tokens)}</td>
-      <td class="mono">${l.cache_read_tokens || l.cache_creation_tokens
-        ? `<span style="color:var(--purple)" title="读 ${l.cache_read_tokens || 0} / 写 ${l.cache_creation_tokens || 0}">⚡${fmtTokens((l.cache_read_tokens || 0) + (l.cache_creation_tokens || 0))}</span>`
-        : '<span class="dim">-</span>'}</td>
+      <td class="mono">${l.cache_hit
+        ? '<span class="tag" style="background:rgba(139,92,246,.2);color:#a78bfa;padding:1px 6px;font-size:10px">⚡ 缓存</span>'
+        : (l.cache_read_tokens || l.cache_creation_tokens
+          ? `<span style="color:var(--purple)" title="读 ${l.cache_read_tokens || 0} / 写 ${l.cache_creation_tokens || 0}">⚡${fmtTokens((l.cache_read_tokens || 0) + (l.cache_creation_tokens || 0))}</span>`
+          : '<span class="dim">-</span>')}</td>
       <td class="mono">${fmtTokens(l.total_tokens)}${l.estimated ? ' <span class="dim" title="估算">≈</span>' : ''}</td>
       <td>${fmtCost(l.cost)}</td>
       <td class="mono">${fmtMs(l.latency_ms)}</td>
@@ -950,7 +952,7 @@ Pages.logs = {
       <td>${esc(l.channel_name || '-')}</td>
       <td>${esc(l.key_name || '-')}</td>
       <td>${l.is_stream ? '<span class="tag info">流式</span>' : '<span class="dim">普通</span>'}</td>
-      <td class="mono">${fmtTokens(l.prompt_tokens)} / ${fmtTokens(l.completion_tokens)}${l.cache_read_tokens ? ` <span style="color:var(--purple)">⚡${fmtTokens(l.cache_read_tokens)}</span>` : ''}</td>
+      <td class="mono">${fmtTokens(l.prompt_tokens)} / ${fmtTokens(l.completion_tokens)}${l.cache_read_tokens ? ` <span style="color:var(--purple)">⚡${fmtTokens(l.cache_read_tokens)}</span>` : ''}${l.cache_hit ? ' <span class="tag" style="background:rgba(139,92,246,.2);color:#a78bfa;padding:0 4px;font-size:10px">缓存</span>' : ''}</td>
       <td>${fmtCost(l.cost)}</td>
       <td class="mono">${fmtMs(l.latency_ms)}</td>
       <td>${l.success ? '<span class="tag ok">' + l.status_code + '</span>'
@@ -978,6 +980,7 @@ Pages.logs = {
         <div><span class="dim">延迟:</span> ${fmtMs(d.latency_ms)} · 重试 ${d.retries || 0} 次</div>
         <div><span class="dim">Tokens:</span> 入 ${d.prompt_tokens} / 出 ${d.completion_tokens} / 缓存 ${d.cache_read_tokens}</div>
         <div><span class="dim">费用:</span> ${fmtCost(d.cost)}</div>
+        <div><span class="dim">响应缓存:</span> ${d.cache_hit ? '<span class="tag" style="background:rgba(139,92,246,.2);color:#a78bfa">⚡ 命中缓存(零费用)</span>' : '<span class="dim">直接转发上游</span>'}</div>
       </div>
       ${d.error ? `<div class="field"><label>错误信息</label><pre class="code" style="margin:0;color:var(--red);max-height:150px;overflow:auto">${pretty(d.error)}</pre></div>` : ''}
       <div class="field"><label>请求体</label><pre class="code" style="margin:0;max-height:220px;overflow:auto">${pretty(d.request_body)}</pre></div>
@@ -1225,27 +1228,36 @@ Pages.dashboard = {
           <button class="btn ghost" onclick="location.href='/docs'">接口文档</button>
           <button class="btn ghost" onclick="location.href='/screen'">打开大屏 →</button></div></div>
       <div class="stat-grid" id="d-stats"></div>
+      <div class="stat-grid" id="d-cache-stats" style="margin-top:12px"></div>
       <div class="chart-flex">
         <div class="panel chart-panel"><h3>24 小时调用趋势</h3><div id="d-trend" style="height:280px"></div></div>
         <div class="panel chart-panel"><h3>渠道健康(定时探测)</h3><div id="d-channels" style="height:280px;overflow-y:auto"></div></div>
       </div>
       <div class="chart-flex" style="margin-top:18px">
-        <div class="panel chart-panel"><h3>热点模型排名(近7天)</h3><div id="d-hot" style="height:300px"></div></div>
+        <div class="panel chart-panel"><h3>缓存命中趋势(24h)</h3><div id="d-cache-trend" style="height:300px"></div></div>
         <div class="panel chart-panel"><h3>调用时段热点(近7天 · 周x24h)</h3><div id="d-heat" style="height:300px"></div></div>
       </div>`;
     await this.refresh();
   },
   async refresh() {
-    const [ov, trend, channels, hot, heat] = await Promise.all([
+    const [ov, trend, channels, heat, cacheSt, cacheTrend] = await Promise.all([
       api('/admin/api/stats/overview?days=1'),
       api('/admin/api/stats/trend?days=1'),
       api('/admin/api/channels'),
-      api('/admin/api/stats/hot_models?days=7&limit=10'),
       api('/admin/api/stats/hourly_heatmap?days=7'),
+      api('/admin/api/cache/stats'),
+      api('/admin/api/cache/trend?hours=24'),
     ]);
     $('#d-stats').innerHTML = [
       ['今日调用', ov.total_calls, 'cyan'], ['今日 Tokens', fmtTokens(ov.today_tokens), 'purple'],
       ['平均延迟', fmtMs(ov.avg_latency_ms), 'amber'], ['在线渠道', `${ov.online_channels} / ${ov.total_channels}`, 'green'],
+    ].map(([l, v, c]) => `<div class="panel stat-card">
+      <div class="label"><span>${l}</span></div><div class="value ${c}">${v}</div></div>`).join('');
+    // 缓存 KPI
+    $('#d-cache-stats').innerHTML = [
+      ['缓存命中', cacheSt.hits || 0, 'purple'], ['命中率', (cacheSt.hit_rate || 0) + '%', 'green'],
+      ['节省费用', '¥' + (cacheSt.total_saved_cost || 0).toFixed(2), 'amber'],
+      ['内存缓存', `${cacheSt.memory_entries || 0} / ${cacheSt.max_memory || 0}`, 'cyan'],
     ].map(([l, v, c]) => `<div class="panel stat-card">
       <div class="label"><span>${l}</span></div><div class="value ${c}">${v}</div></div>`).join('');
 
@@ -1281,23 +1293,27 @@ Pages.dashboard = {
         <span class="dim" style="font-size:12px">${state}</span></div>`;
     }).join('') : `<div class="empty-tip">暂无渠道</div>`;
 
-    /* 热点模型排名 */
-    const hc = mkChart($('#d-hot'));
-    if (hot.length) {
-      hc.setOption({
+    /* 缓存命中趋势(24h) */
+    const cacheChart = mkChart($('#d-cache-trend'));
+    const ctData = cacheTrend || [];
+    if (ctData.length) {
+      cacheChart.setOption({
         tooltip: {trigger: 'axis', backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
           textStyle: {color: '#d7e6ff', fontSize: 11}},
-        grid: {left: 10, right: 40, top: 10, bottom: 10, containLabel: true},
-        xAxis: {type: 'value', ...CHART_AXIS},
-        yAxis: {type: 'category', data: hot.map(x => x.name).reverse(),
-          axisLabel: {...CHART_TEXT, width: 120, overflow: 'truncate'}},
+        grid: {left: 10, right: 16, top: 30, bottom: 10, containLabel: true},
+        legend: {data: ['命中数', '节省费用'], textStyle: CHART_TEXT, top: 0, right: 0},
+        xAxis: {type: 'category', data: ctData.map(t => t.hour.slice(11, 16)), ...CHART_AXIS},
+        yAxis: [{type: 'value', ...CHART_AXIS, name: '命中数'},
+                {type: 'value', ...CHART_AXIS, splitLine: {show: false}, name: '费用'}],
         series: [
-          {type: 'bar', name: '调用次数', data: hot.map(x => x.calls).reverse(), barWidth: 10,
-            itemStyle: {color: {type: 'linear', x: 0, y: 0, x2: 1, y2: 0,
-              colorStops: [{offset: 0, color: '#8b5cf6'}, {offset: 1, color: '#00e5ff'}]}}},
-          {type: 'bar', name: '费用', xAxisIndex: 0, data: [], barWidth: 10},
+          {name: '命中数', type: 'bar', data: ctData.map(t => t.hits), barWidth: 10,
+            itemStyle: {color: {type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+              colorStops: [{offset: 0, color: '#8b5cf6'}, {offset: 1, color: '#6366f1'}]}}},
+          {name: '节省费用', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'circle', symbolSize: 4,
+            data: ctData.map(t => t.saved_cost), lineStyle: {color: '#f59e0b', width: 2},
+            itemStyle: {color: '#f59e0b'}},
         ]});
-    } else { hc.setOption({title: {text: '暂无数据', left: 'center', top: 'middle', textStyle: CHART_TEXT}}); }
+    } else { cacheChart.setOption({title: {text: '暂无缓存数据', left: 'center', top: 'middle', textStyle: CHART_TEXT}}); }
 
     /* 调用时段热力图(周 x 24h) */
     const hmc = mkChart($('#d-heat'));
@@ -1321,5 +1337,146 @@ Pages.dashboard = {
       series: [{type: 'heatmap', data: hmData,
         itemStyle: {borderColor: '#060b18', borderWidth: 1, borderRadius: 2},
         emphasis: {itemStyle: {shadowBlur: 8, shadowColor: 'rgba(0,229,255,.5)'}}}]});
+  },
+};
+
+/* ================= 缓存管理 ================= */
+Pages.cache = {
+  _hours: 24,
+  async render(main) {
+    main.innerHTML = `
+      <div class="page-head"><h2>响应缓存管理</h2>
+        <div class="actions">
+          <button class="btn ghost" id="ca-refresh">⟳ 刷新</button>
+          <button class="btn danger" id="ca-clear">🗑 清空缓存</button></div></div>
+      <div class="stat-grid" id="ca-stats"></div>
+      <div class="panel chart-panel" style="margin-bottom:18px">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <h3>缓存命中趋势</h3>
+          <div class="btn-group" id="ca-range" style="display:flex;gap:2px">
+            <button class="btn ghost active" data-h="24" style="padding:2px 8px;font-size:11px">24h</button>
+            <button class="btn ghost" data-h="72" style="padding:2px 8px;font-size:11px">3天</button>
+            <button class="btn ghost" data-h="168" style="padding:2px 8px;font-size:11px">7天</button>
+          </div>
+        </div>
+        <div id="ca-trend" style="height:280px"></div>
+      </div>
+      <div class="panel" style="padding:6px 10px;margin-bottom:18px">
+        <h3 style="margin-bottom:8px">最近命中记录</h3>
+        <table class="gw-table"><thead><tr>
+          <th>时间</th><th>模型</th><th>类型</th><th>输入tk</th><th>输出tk</th>
+          <th>节省费用</th><th>剩余TTL</th>
+        </tr></thead><tbody id="ca-tbody"></tbody></table>
+      </div>
+      <div class="panel" style="padding:20px;max-width:560px">
+        <h3 style="font-size:14px;color:var(--text-dim);margin-bottom:14px">缓存配置</h3>
+        <div class="form-row">
+          <div class="field"><label>启用响应缓存</label>
+            <select id="ca-enabled"><option value="1">启用</option><option value="0">禁用</option></select></div>
+          <div class="field"><label>默认 TTL(秒)</label><input id="ca-ttl" type="number" min="10" placeholder="300"></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>内存 LRU 上限(条)</label><input id="ca-mem" type="number" min="10" placeholder="200"></div>
+          <div class="field"><label>SQLite 上限(条)</label><input id="ca-sqlite" type="number" min="100" placeholder="10000"></div>
+        </div>
+        <div style="margin-top:16px;display:flex;justify-content:flex-end">
+          <button class="btn" id="ca-save">保存配置</button></div>
+        <div class="dim" style="font-size:11px;margin-top:10px">
+          说明: 仅缓存非流式请求(chat/completions/embeddings)。相同请求体(Temperature/Messages等)在 TTL 内直接返回缓存结果, 零费用。
+          Embeddings 默认 TTL 1小时(确定性输出)。客户端可通过请求头 <span class="mono">X-Cache-Bypass: 1</span> 强制跳过缓存。
+        </div>
+      </div>`;
+    $('#ca-refresh').onclick = () => this.refresh();
+    $('#ca-clear').onclick = async () => {
+      if (!confirm('确定清空全部缓存?')) return;
+      await apiDelete('/admin/api/cache');
+      toast('已清空缓存', 'ok');
+      this.refresh();
+    };
+    $$('#ca-range button').forEach(b => b.onclick = () => {
+      this._hours = +b.dataset.h;
+      $$('#ca-range button').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      this._refreshTrend();
+    });
+    $('#ca-save').onclick = async () => {
+      try {
+        await apiPut('/admin/api/cache/config', {
+          cache_enabled: $('#ca-enabled').value,
+          cache_ttl: +$('#ca-ttl').value,
+          cache_max_memory: +$('#ca-mem').value,
+          cache_max_sqlite: +$('#ca-sqlite').value,
+        });
+        toast('已保存', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    await this.refresh();
+  },
+  async refresh() {
+    const [st, trend, recent, cfg] = await Promise.all([
+      api('/admin/api/cache/stats'),
+      api(`/admin/api/cache/trend?hours=${this._hours}`),
+      api('/admin/api/cache/recent?limit=50'),
+      api('/admin/api/cache/config'),
+    ]);
+    // KPI
+    $('#ca-stats').innerHTML = [
+      ['命中率', (st.hit_rate || 0) + '%', 'purple'],
+      ['命中数', st.hits || 0, 'cyan'],
+      ['未命中', st.misses || 0, 'amber'],
+      ['节省费用', '¥' + (st.total_saved_cost || 0).toFixed(2), 'green'],
+      ['内存条目', `${st.memory_entries || 0} / ${st.max_memory || 0}`, 'cyan'],
+      ['SQLite 条目', st.sqlite_entries || 0, 'dim'],
+    ].map(([l, v, c]) => `<div class="panel stat-card">
+      <div class="label"><span>${l}</span></div><div class="value ${c}">${v}</div></div>`).join('');
+    // 趋势图
+    this._renderTrend(trend);
+    // 最近记录
+    const tb = $('#ca-tbody');
+    tb.innerHTML = recent.length ? recent.map(r => `<tr>
+      <td class="dim" style="font-size:12px;white-space:nowrap">${fmtTime(r.created_at)}</td>
+      <td class="mono" style="font-size:12px">${esc(r.model || '-')}</td>
+      <td><span class="tag info" style="padding:1px 6px;font-size:10px">${esc(r.kind || '-')}</span></td>
+      <td class="mono">${fmtTokens(r.prompt_tokens)}</td>
+      <td class="mono">${fmtTokens(r.completion_tokens)}</td>
+      <td style="color:var(--green)">¥${fmtCost(r.saved_cost)}</td>
+      <td class="dim" style="font-size:11px">${r.ttl_left > 0 ? Math.floor(r.ttl_left / 60) + 'm' + (r.ttl_left % 60) + 's' : '-'}</td>
+    </tr>`).join('') : `<tr><td colspan="7"><div class="empty-tip">暂无缓存命中记录</div></td></tr>`;
+    // 配置
+    $('#ca-enabled').value = cfg.cache_enabled === '0' ? '0' : '1';
+    $('#ca-ttl').value = cfg.cache_ttl || 300;
+    $('#ca-mem').value = cfg.cache_max_memory || 200;
+    $('#ca-sqlite').value = cfg.cache_max_sqlite || 10000;
+  },
+  async _refreshTrend() {
+    const trend = await api(`/admin/api/cache/trend?hours=${this._hours}`);
+    this._renderTrend(trend);
+  },
+  _renderTrend(trend) {
+    disposeCharts();
+    const el = $('#ca-trend');
+    if (!el) return;
+    const chart = mkChart(el);
+    const data = trend || [];
+    if (data.length) {
+      chart.setOption({
+        tooltip: {trigger: 'axis', backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
+          textStyle: {color: '#d7e6ff', fontSize: 11}},
+        grid: {left: 10, right: 16, top: 30, bottom: 10, containLabel: true},
+        legend: {data: ['命中数', '节省费用'], textStyle: CHART_TEXT, top: 0, right: 0},
+        xAxis: {type: 'category', data: data.map(t => t.hour.slice(5, 16)), ...CHART_AXIS},
+        yAxis: [{type: 'value', ...CHART_AXIS, name: '命中数'},
+                {type: 'value', ...CHART_AXIS, splitLine: {show: false}, name: '费用'}],
+        series: [
+          {name: '命中数', type: 'bar', data: data.map(t => t.hits), barWidth: 10,
+            itemStyle: {color: {type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+              colorStops: [{offset: 0, color: '#8b5cf6'}, {offset: 1, color: '#6366f1'}]}}},
+          {name: '节省费用', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'circle', symbolSize: 4,
+            data: data.map(t => t.saved_cost), lineStyle: {color: '#10e0a0', width: 2},
+            itemStyle: {color: '#10e0a0'}},
+        ]});
+    } else {
+      chart.setOption({title: {text: '暂无缓存数据', left: 'center', top: 'middle', textStyle: CHART_TEXT}});
+    }
   },
 };

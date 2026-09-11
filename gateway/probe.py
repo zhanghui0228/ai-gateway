@@ -240,6 +240,14 @@ def _interval():
         return 300
 
 
+_cleanup_callbacks = []
+
+
+def register_cleanup(fn):
+    """注册额外的周期清理回调(在探测调度器每次执行后调用)"""
+    _cleanup_callbacks.append(fn)
+
+
 def start_scheduler(app):
     """后台定时探测线程"""
     real_app = app._get_current_object() if hasattr(app, "_get_current_object") else app
@@ -264,4 +272,10 @@ def start_scheduler(app):
                     cleanup_call_logs()
                 except Exception:
                     pass
+                # 执行注册的额外清理回调
+                for fn in _cleanup_callbacks:
+                    try:
+                        fn()
+                    except Exception:
+                        pass
     threading.Thread(target=run, daemon=True, name="probe-scheduler").start()
