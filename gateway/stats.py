@@ -95,12 +95,17 @@ def by_key(days=30, start=None, end=None):
     return _group_by(UsageLog.key_name, days, start, end)
 
 
-def recent_logs(limit=50, only_success=None):
+def recent_logs(limit=50, only_success=None, page=None, page_size=None):
     q = UsageLog.query.order_by(UsageLog.id.desc())
     if only_success is True:
         q = q.filter_by(success=True)
     elif only_success is False:
         q = q.filter_by(success=False)
+    if page and page_size:
+        total = q.count()
+        rows = q.offset((page - 1) * page_size).limit(page_size).all()
+        return {"items": [l.to_dict() for l in rows], "total": total,
+                "page": page, "page_size": page_size, "pages": (total + page_size - 1) // page_size}
     return [l.to_dict() for l in q.limit(min(limit, 500)).all()]
 
 

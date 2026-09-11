@@ -498,12 +498,14 @@ def stats_key():
 def stats_logs():
     limit = request.args.get("limit", 50, type=int)
     success = request.args.get("success")
+    page = request.args.get("page", type=int)
+    page_size = request.args.get("page_size", type=int)
     only = None
     if success == "true":
         only = True
     elif success == "false":
         only = False
-    return jsonify(stats.recent_logs(limit, only))
+    return jsonify(stats.recent_logs(limit, only, page=page, page_size=page_size))
 
 
 # ---------- 渠道探测 / 自动获取模型 ----------

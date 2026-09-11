@@ -676,7 +676,7 @@ Pages.prices = {
 
 /* ================= 用量统计 ================= */
 Pages.usage = {
-  logState: {page: 1, size: 20, total: 0, days: 7},
+  logState: {page: 1, size: 20, total: 0},
   async render(main) {
     main.innerHTML = `
       <div class="page-head"><h2>用量统计</h2>
@@ -801,8 +801,8 @@ Pages.usage = {
     await this._refreshLogTable();
   },
   async _refreshLogTable() {
-    const {page, size, days} = this.logState;
-    const r = await api(`/admin/api/logs?page=${page}&page_size=${size}&days=${days}`);
+    const {page, size} = this.logState;
+    const r = await api(`/admin/api/stats/logs?page=${page}&page_size=${size}`);
     this.logState.total = r.total || 0;
     const logs = r.items || [];
     const tb = $('#log-tbody');
@@ -810,13 +810,13 @@ Pages.usage = {
       <td class="dim" style="font-size:12px;white-space:nowrap">${fmtTime(l.created_at)}</td>
       <td>${esc(l.key_name || '-')}</td>
       <td>${esc(l.channel_name || '-')}</td>
-      <td class="mono" style="font-size:12px">${esc(l.model_actual || l.model_requested || '-')}</td>
+      <td class="mono" style="font-size:12px">${esc(l.model || '-')}</td>
       <td class="mono">${fmtTokens(l.prompt_tokens)}</td>
       <td class="mono">${fmtTokens(l.completion_tokens)}</td>
-      <td class="mono">${l.cache_read_tokens
-        ? `<span style="color:var(--purple)">⚡${fmtTokens(l.cache_read_tokens)}</span>`
+      <td class="mono">${l.cache_read_tokens || l.cache_creation_tokens
+        ? `<span style="color:var(--purple)" title="读 ${l.cache_read_tokens || 0} / 写 ${l.cache_creation_tokens || 0}">⚡${fmtTokens((l.cache_read_tokens || 0) + (l.cache_creation_tokens || 0))}</span>`
         : '<span class="dim">-</span>'}</td>
-      <td class="mono">${fmtTokens(l.total_tokens)}</td>
+      <td class="mono">${fmtTokens(l.total_tokens)}${l.estimated ? ' <span class="dim" title="估算">≈</span>' : ''}</td>
       <td>${fmtCost(l.cost)}</td>
       <td class="mono">${fmtMs(l.latency_ms)}</td>
       <td>${l.success ? '<span class="tag ok">' + l.status_code + '</span>'
