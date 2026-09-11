@@ -676,6 +676,7 @@ Pages.prices = {
 
 /* ================= 用量统计 ================= */
 Pages.usage = {
+  logState: {page: 1, size: 20, total: 0, days: 7},
   async render(main) {
     main.innerHTML = `
       <div class="page-head"><h2>用量统计</h2>
@@ -698,24 +699,148 @@ Pages.usage = {
         <div id="u-heat" style="height:260px"></div>
       </div>
       <div class="panel" style="padding:6px 10px;margin-bottom:18px">
+        <div id="u-log-pagination" style="display:flex;align-items:center;gap:12px;margin-bottom:8px"></div>
         <table class="gw-table"><thead><tr>
           <th>时间</th><th>Key</th><th>渠道</th><th>模型</th><th>输入tk</th><th>输出tk</th>
           <th>缓存命中</th><th>总tk</th><th>费用</th><th>延迟</th><th>状态</th><th>错误</th>
         </tr></thead><tbody id="log-tbody"></tbody></table>
       </div>`;
-    $('#u-days').onchange = () => this.refresh();
+    $('#u-days').onchange = () => { this.logState.page = 1; this.refresh(); };
     await this.refresh();
+  },
+  async refreshCharts(ov, byModel, byChan, heat, daily) {
+    $('#u-stats').innerHTML = [
+      ['总调用', ov.total_calls, 'cyan'], ['成功率', ov.success_rate + '%', 'green'],
+      ['总 Tokens', fmtTokens(ov.total_tokens), 'purple'], ['总费用', fmtCost(ov.cost), 'amber'],
+    ].map(([l, v, c]) => `<div class="panel stat-card">
+      <div class="label"><span>${l}</span></div><div class="value ${c}">${v}</div></div>`).join('');
+
+    disposeCharts();
+    const cm = mkChart($('#c-model'));
+    byModel.sort((a, b) => b.tokens - a.tokens);
+    cm.setOption({
+      tooltip: {trigger: 'axis', backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)', textStyle: {color: '#d7e6ff', fontSize: 11}},
+      grid: {left: 10, right: 30, top: 10, bottom: 10, containLabel: true},
+      xAxis: {type: 'value', ...CHART_AXIS},
+      yAxis: {type: 'category', data: byModel.map(x => x.name).reverse(),
+        axisLabel: {...CHART_TEXT, width: 110, overflow: 'truncate'}},
+      series: [{type: 'bar', data: byModel.map(x => x.tokens).reverse(),
+        itemStyle: {color: {type: 'linear', x: 0, y: 0, x2: 1, y2: 0,
+          colorStops: [{offset: 0, color: '#3b82f6'}, {offset: 1, color: '#00e5ff'}]}},
+        barWidth: 12}]});
+    const cc = mkChart($('#c-chan'));
+    cc.setOption({
+      tooltip: {trigger: 'item', backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)', textStyle: {color: '#d7e6ff', fontSize: 11}},
+      legend: {bottom: 0, textStyle: CHART_TEXT, itemWidth: 10, itemHeight: 10},
+      series: [{type: 'pie', radius: ['45%', '70%'], center: ['50%', '45%'],
+        data: byChan.map(x => ({name: x.name, value: x.calls})),
+        label: {color: '#6b83a8', fontSize: 11},
+        itemStyle: {borderColor: '#060b18', borderWidth: 2}}]});
+    const hmc = mkChart($('#u-heat'));
+    const dlabels = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+    const hmData = [];
+    let maxV = 0;
+    (heat || []).forEach((row, di) => (row || []).forEach((v, hi) => {
+      if (v) { hmData.push([hi, di, v]); maxV = Math.max(maxV, v); }
+    }));
+    hmc.setOption({
+      tooltip: {backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
+        textStyle: {color: '#d7e6ff', fontSize: 11},
+        formatter: p => `${dlabels[p.data[1]]} ${String(p.data[0]).padStart(2, '0')}:00<br/>调用 ${p.data[2]} 次`},
+      grid: {left: 10, right: 16, top: 10, bottom: 56, containLabel: true},
+      xAxis: {type: 'category', data: Array.from({length: 24}, (_, i) => String(i).padStart(2, '0')), ...CHART_AXIS},
+      yAxis: {type: 'category', data: dlabels, ...CHART_AXIS},
+      visualMap: {min: 0, max: Math.max(1, maxV), orient: 'horizontal', left: 'center', bottom: 0,
+        itemWidth: 10, itemHeight: 90, textStyle: CHART_TEXT,
+        inRange: {color: ['rgba(13,22,44,0.5)', '#3b82f6', '#00e5ff', '#10e0a0']}},
+      series: [{type: 'heatmap', data: hmData,
+        itemStyle: {borderColor: '#060b18', borderWidth: 1, borderRadius: 2},
+        emphasis: {itemStyle: {shadowBlur: 8, shadowColor: 'rgba(0,229,255,.5)'}}}]});
+    /* 每日用量图:tokens 柱状 + 调用折线 + 模型数次折线 */
+    const dc = mkChart($('#u-daily'));
+    const dd = daily.daily || [];
+    if (dd.length) {
+      dc.setOption({
+        tooltip: {trigger: 'axis', backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
+          textStyle: {color: '#d7e6ff', fontSize: 11}},
+        grid: {left: 10, right: 14, top: 34, bottom: 10, containLabel: true},
+        legend: {data: ['Tokens', '缓存命中', '总调用', '模型数'], textStyle: CHART_TEXT,
+          top: 0, right: 0, itemWidth: 12, itemHeight: 8},
+        xAxis: {type: 'category', data: dd.map(x => x.date.slice(5)), ...CHART_AXIS},
+        yAxis: [{type: 'value', ...CHART_AXIS},
+                {type: 'value', ...CHART_AXIS, splitLine: {show: false}}],
+        series: [
+          {name: 'Tokens', type: 'bar', data: dd.map(x => x.total_tokens), barWidth: 12,
+            itemStyle: {color: {type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+              colorStops: [{offset: 0, color: '#00e5ff'}, {offset: 1, color: '#3b82f6'}]}}},
+          {name: '缓存命中', type: 'bar', data: dd.map(x => x.cache_tokens), barWidth: 12,
+            itemStyle: {color: '#8b5cf6'}},
+          {name: '总调用', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'circle', symbolSize: 5,
+            data: dd.map(x => x.calls), lineStyle: {color: '#10e0a0', width: 2},
+            itemStyle: {color: '#10e0a0'}},
+          {name: '模型数', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'none',
+            data: dd.map(x => x.models), lineStyle: {color: '#ffb020', width: 1.5, type: 'dashed'},
+            itemStyle: {color: '#ffb020'}},
+        ]});
+    } else {
+      dc.setOption({title: {text: '暂无数据', left: 'center', top: 'middle', textStyle: CHART_TEXT}});
+    }
+    this._dailyModelCalls = daily.model_calls || {};
   },
   async refresh() {
     const days = $('#u-days') ? +$('#u-days').value : 7;
-    const [ov, byModel, byChan, logs, heat, daily] = await Promise.all([
+    this.logState.days = days;
+    const [ov, byModel, byChan, heat, daily] = await Promise.all([
       api(`/admin/api/stats/overview?days=${days}`),
       api(`/admin/api/stats/by_model?days=${days}`),
       api(`/admin/api/stats/by_channel?days=${days}`),
-      api(`/admin/api/stats/logs?limit=100`),
       api(`/admin/api/stats/hourly_heatmap?days=7`),
       api(`/admin/api/stats/daily?days=14`),
     ]);
+    this.refreshCharts(ov, byModel, byChan, heat, daily);
+    await this._refreshLogTable();
+  },
+  async _refreshLogTable() {
+    const {page, size, days} = this.logState;
+    const r = await api(`/admin/api/logs?page=${page}&page_size=${size}&days=${days}`);
+    this.logState.total = r.total || 0;
+    const logs = r.items || [];
+    const tb = $('#log-tbody');
+    tb.innerHTML = logs.length ? logs.map(l => `<tr>
+      <td class="dim" style="font-size:12px;white-space:nowrap">${fmtTime(l.created_at)}</td>
+      <td>${esc(l.key_name || '-')}</td>
+      <td>${esc(l.channel_name || '-')}</td>
+      <td class="mono" style="font-size:12px">${esc(l.model_actual || l.model_requested || '-')}</td>
+      <td class="mono">${fmtTokens(l.prompt_tokens)}</td>
+      <td class="mono">${fmtTokens(l.completion_tokens)}</td>
+      <td class="mono">${l.cache_read_tokens
+        ? `<span style="color:var(--purple)">⚡${fmtTokens(l.cache_read_tokens)}</span>`
+        : '<span class="dim">-</span>'}</td>
+      <td class="mono">${fmtTokens(l.total_tokens)}</td>
+      <td>${fmtCost(l.cost)}</td>
+      <td class="mono">${fmtMs(l.latency_ms)}</td>
+      <td>${l.success ? '<span class="tag ok">' + l.status_code + '</span>'
+        : `<span class="tag err">${l.status_code || 'ERR'}</span>${l.retries ? ' <span class="tag warn">重试' + l.retries + '</span>' : ''}`}</td>
+      <td class="dim" style="font-size:11px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(l.error)}">${esc(l.error || '-')}</td>
+    </tr>`).join('') : `<tr><td colspan="12"><div class="empty-tip">暂无调用记录</div></td></tr>`;
+    /* 分页栏 */
+    const pages = Math.max(1, Math.ceil(this.logState.total / size));
+    const pag = $('#u-log-pagination');
+    pag.innerHTML = `
+      <span class="dim" style="font-size:12px">共 ${this.logState.total} 条</span>
+      <select id="u-size" style="width:auto">
+        <option value="20" ${size === 20 ? 'selected' : ''}>20条/页</option>
+        <option value="50" ${size === 50 ? 'selected' : ''}>50条/页</option>
+        <option value="100" ${size === 100 ? 'selected' : ''}>100条/页</option>
+      </select>
+      <button class="btn ghost" id="u-prev" style="padding:3px 10px;font-size:12px" ${page <= 1 ? 'disabled' : ''}>‹ 上一页</button>
+      <span style="font-size:12px">${page} / ${pages}</span>
+      <button class="btn ghost" id="u-next" style="padding:3px 10px;font-size:12px" ${page >= pages ? 'disabled' : ''}>下一页 ›</button>`;
+    $('#u-size').onchange = () => { this.logState.size = +$('#u-size').value; this.logState.page = 1; this._refreshLogTable(); };
+    $('#u-prev').onclick = () => { if (this.logState.page > 1) { this.logState.page--; this._refreshLogTable(); } };
+    $('#u-next').onclick = () => { if (this.logState.page < pages) { this.logState.page++; this._refreshLogTable(); } };
+  },
+  refreshCharts(ov, byModel, byChan, heat, daily) {
     $('#u-stats').innerHTML = [
       ['总调用', ov.total_calls, 'cyan'], ['成功率', ov.success_rate + '%', 'green'],
       ['总 Tokens', fmtTokens(ov.total_tokens), 'purple'], ['总费用', fmtCost(ov.cost), 'amber'],
@@ -944,7 +1069,7 @@ Pages.logs = {
         <div><span class="dim">Tokens:</span> 入 ${d.prompt_tokens} / 出 ${d.completion_tokens} / 缓存 ${d.cache_read_tokens}</div>
         <div><span class="dim">费用:</span> ${fmtCost(d.cost)}</div>
       </div>
-      ${d.error ? `<div class="field"><label>错误信息</label><pre class="code" style="margin:0;color:var(--red)">${esc(d.error)}</pre></div>` : ''}
+      ${d.error ? `<div class="field"><label>错误信息</label><pre class="code" style="margin:0;color:var(--red);max-height:150px;overflow:auto">${pretty(d.error)}</pre></div>` : ''}
       <div class="field"><label>请求体</label><pre class="code" style="margin:0;max-height:220px;overflow:auto">${pretty(d.request_body)}</pre></div>
       <div class="field"><label>响应内容</label><pre class="code" style="margin:0;max-height:220px;overflow:auto">${pretty(d.response_body)}</pre></div>
       <div class="dim" style="font-size:11px">User-Agent: ${esc(d.user_agent || '-')}</div>

@@ -676,6 +676,15 @@ def list_logs():
         q = q.filter(db.or_(CallLog.request_body.like(kw), CallLog.response_body.like(kw),
                             CallLog.error.like(kw), CallLog.client_ip.like(kw),
                             CallLog.key_name.like(kw)))
+    if _rq.args.get("days"):
+        try:
+            from datetime import datetime, timedelta, timezone
+            days = int(_rq.args["days"])
+            if days > 0:
+                cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+                q = q.filter(CallLog.created_at >= cutoff)
+        except (ValueError, TypeError):
+            pass
     if _rq.args.get("start"):
         try:
             from datetime import datetime
