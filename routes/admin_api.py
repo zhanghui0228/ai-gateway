@@ -1,6 +1,7 @@
 """管理控制台 API"""
+import threading
 import httpx
-from flask import (Blueprint, jsonify, request, session)
+from flask import (Blueprint, current_app, jsonify, request, session)
 
 import config
 from gateway import balancer, events, pricing, stats
@@ -301,7 +302,9 @@ def model_status_api():
     chan_list = []
     for ch in channels:
         state, _ = balancer.breaker_info(ch)
-        chan_list.append({"id": ch.id, "name": ch.name, "enabled": ch.enabled, "breaker": state})
+        chan_list.append({"id": ch.id, "name": ch.name, "enabled": ch.enabled,
+                          "breaker": state, "models": ch.models or [],
+                          "priority": ch.priority or 0, "weight": ch.weight or 1})
         for m in (ch.models or []):
             entry = {"channel_id": ch.id, "channel_name": ch.name,
                      "enabled": ch.enabled, "breaker": state}
@@ -510,6 +513,33 @@ def probe_all():
     """手动触发一次全渠道 L1 探测(免费,零 token)"""
     from gateway import probe as probe_mod
     return jsonify(probe_mod.probe_all())
+
+
+@admin_bp.route("/probe/all/deep", methods=["POST"])
+@admin_required
+def probe_all_deep():
+    """一键深度检查:对所有启用渠道逐一进行 L2 模型探测(后台线程)"""
+    from gateway import probe as probe_mod
+
+    def _do():
+        app = current_app._get_current_object()
+        with app.app_context():
+            for ch in Channel.query.filter_by(enabled=True).all():
+                try:
+                    results = probe_mod.probe_channel_models(ch, max_models=10)
+                    ch.model_status = results
+                    from gateway import balancer as _bal
+                    any_ok = any(r.get("ok") for r in results.values())
+                    if any_ok:
+                        _bal.note_success(ch)
+                    else:
+                        _bal.note_failure(ch)
+                    db.session.commit()
+                except Exception:
+                    pass
+
+    threading.Thread(target=_do, daemon=True, name="probe-all-deep").start()
+    return jsonify({"ok": True, "message": "已启动全部渠道深度检查,完成后自动刷新查看结果"})
 
 
 @admin_bp.route("/channels/<int:cid>/probe", methods=["POST"])

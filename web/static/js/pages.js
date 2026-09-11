@@ -369,22 +369,37 @@ Pages.channels = {
 Pages.model_status = {
   data: null,
   filter: '',
+  expanded: {},  // {channel_id: true}
   async render(main) {
     main.innerHTML = `
       <div class="page-head"><h2>模型状态</h2>
-        <div class="actions"><button class="btn ghost" id="btn-ms-refresh">⟳ 刷新</button></div></div>
+        <div class="actions">
+          <button class="btn" id="btn-ms-checkall">🔍 一键检查</button>
+          <button class="btn ghost" id="btn-ms-refresh">⟳ 刷新</button></div></div>
       <div class="panel" style="padding:10px 14px">
         <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
-          <input id="ms-search" placeholder="搜索模型名..." style="width:240px;padding:5px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px">
+          <input id="ms-search" placeholder="搜索模型名(自动展开匹配渠道)..." style="width:300px;padding:5px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px">
           <span class="dim" style="font-size:12px" id="ms-summary"></span>
         </div>
-        <div style="overflow-x:auto;max-height:calc(100vh - 180px);overflow-y:auto">
-          <table class="gw-table" id="ms-table"></table>
-        </div>
+        <div id="ms-list" style="max-height:calc(100vh - 180px);overflow-y:auto"></div>
       </div>`;
     $('#btn-ms-refresh').onclick = () => this.refresh();
-    $('#ms-search').oninput = (e) => { this.filter = e.target.value.toLowerCase(); this._renderTable(); };
+    $('#btn-ms-checkall').onclick = () => this.checkAll();
+    $('#ms-search').oninput = (e) => { this.filter = e.target.value.toLowerCase(); this._onSearch(); };
     await this.refresh();
+  },
+  _onSearch() {
+    // 搜索时自动展开包含匹配模型的渠道
+    if (!this.data || !this.filter) { this._renderTable(); return; }
+    const matchedChannels = new Set();
+    for (const m of this.data.models) {
+      if (m.toLowerCase().includes(this.filter)) {
+        for (const e of (this.data.status[m] || [])) matchedChannels.add(e.channel_id);
+      }
+    }
+    this.expanded = {};
+    matchedChannels.forEach(id => { this.expanded[id] = true; });
+    this._renderTable();
   },
   async refresh() {
     try {
@@ -393,51 +408,106 @@ Pages.model_status = {
       this._renderTable();
     } catch (e) { toast(e.message, 'err'); }
   },
+  async checkChannel(id, btn) {
+    btn.disabled = true; btn.textContent = '检查中…';
+    try {
+      await apiPost(`/admin/api/channels/${id}/test`, {});
+      toast('检查完成', 'ok');
+      await this.refresh();
+    } catch (e) { toast(e.message, 'err'); btn.disabled = false; btn.textContent = '检查'; }
+  },
+  async checkAll() {
+    toast('已启动全部渠道深度检查,完成后自动更新…');
+    try {
+      await apiPost('/admin/api/probe/all/deep', {});
+      // 后台执行,15秒后自动刷新
+      setTimeout(() => this.refresh(), 15000);
+    } catch (e) { toast(e.message, 'err'); }
+  },
   _renderTable() {
     if (!this.data) return;
     const { models, channels, status } = this.data;
-    const tab = $('#ms-table');
-    const filtered = this.filter ? models.filter(m => m.toLowerCase().includes(this.filter)) : models;
+    const container = $('#ms-list');
 
-    // 汇总表头: 模型名 | 可用/总数 | 各渠道
-    const chanCols = channels.map(c => {
-      const disabled = !c.enabled || c.breaker === 'open' ? ' <span class="dim" style="font-size:10px">(停用)</span>' : '';
-      return `<th style="min-width:90px;text-align:center" title="${esc(c.name)}${c.breaker === 'open' ? ' [熔断]' : ''}">${esc(c.name.length > 8 ? c.name.slice(0, 8) + '..' : c.name)}${disabled}</th>`;
-    }).join('');
-
-    // 数据行
-    const rows = filtered.map(m => {
-      const entries = status[m] || [];
-      const total = entries.length;
-      const okCount = entries.filter(e => e.ok === true).length;
-      const cells = channels.map(ch => {
-        const e = entries.find(x => x.channel_id === ch.id);
-        if (!e || e.ok === undefined || e.ok === null) {
-          return `<td style="text-align:center"><span class="dim" style="font-size:11px">未测</span></td>`;
-        }
-        if (e.ok === true) {
-          return `<td style="text-align:center"><span class="tag ok" style="padding:1px 5px;font-size:10px" title="${esc(e.error || '')}">✓ ${e.latency_ms || '-'}ms</span></td>`;
-        }
-        const errHint = e.error ? ` title="${esc(e.error)}"` : '';
-        return `<td style="text-align:center"${errHint}><span class="tag err" style="padding:1px 5px;font-size:10px">✗ ${e.status || 'err'}</span></td>`;
-      }).join('');
-      const ratioColor = okCount === total ? 'ok' : okCount > 0 ? 'warn' : 'err';
-      return `<tr>
-        <td class="mono" style="font-size:12px;font-weight:600">${esc(m)}</td>
-        <td style="text-align:center"><span class="tag ${ratioColor}" style="padding:1px 5px;font-size:10px">${okCount}/${total}</span></td>
-        ${cells}</tr>`;
-    }).join('');
-
-    tab.innerHTML = `<thead><tr>
-      <th style="min-width:140px">模型</th>
-      <th style="min-width:60px;text-align:center">可用</th>
-      ${chanCols}
-    </tr></thead><tbody>${rows || '<tr><td colspan="' + (channels.length + 2) + '"><div class="empty-tip">暂无数据</div></td></tr>'}</tbody>`;
-
-    // 汇总信息
-    const totalModels = models.length;
+    // 汇总
     const testedModels = models.filter(m => (status[m] || []).some(e => e.ok !== null && e.ok !== undefined)).length;
-    $('#ms-summary').textContent = `共 ${totalModels} 个模型, ${channels.length} 个渠道, ${testedModels} 个已探测${this.filter ? ` (筛选: ${filtered.length})` : ''}`;
+    $('#ms-summary').textContent = `共 ${models.length} 个模型 / ${channels.length} 个渠道 / ${testedModels} 个已探测`;
+
+    if (!channels.length) { container.innerHTML = '<div class="empty-tip">暂无渠道</div>'; return; }
+
+    // 按渠道分组渲染
+    container.innerHTML = channels.map(ch => {
+      const expanded = this.expanded[ch.id];
+      // 该渠道的所有模型及状态
+      const modelEntries = (ch.models || []).map(m => {
+        const e = (status[m] || []).find(x => x.channel_id === ch.id);
+        return { model: m, status: e || { ok: null } };
+      });
+
+      // 搜索过滤
+      const filtered = this.filter
+        ? modelEntries.filter(x => x.model.toLowerCase().includes(this.filter))
+        : modelEntries;
+
+      const total = modelEntries.length;
+      const okCount = modelEntries.filter(x => x.status.ok === true).length;
+      const testedCount = modelEntries.filter(x => x.status.ok !== null && x.status.ok !== undefined).length;
+
+      // 渠道状态标记
+      let stateTag;
+      if (!ch.enabled) stateTag = '<span class="tag dim">停用</span>';
+      else if (ch.breaker === 'open') stateTag = '<span class="tag err">熔断</span>';
+      else if (ch.breaker === 'half_open') stateTag = '<span class="tag warn">半开</span>';
+      else if (testedCount === 0) stateTag = '<span class="tag dim">未测</span>';
+      else stateTag = '<span class="tag ok">在线</span>';
+
+      // 可用率
+      const ratioColor = okCount === total && total > 0 ? 'ok' : okCount > 0 ? 'warn' : total > 0 ? 'err' : 'dim';
+
+      // 模型行
+      const modelRows = expanded && filtered.length > 0 ? filtered.map(({ model, status }) => {
+        let cell;
+        if (status.ok === null || status.ok === undefined) {
+          cell = '<span class="dim" style="font-size:12px">未测</span>';
+        } else if (status.ok === true) {
+          cell = `<span class="tag ok" style="padding:1px 6px;font-size:11px" title="${esc(status.error || '')}">✓ ${status.latency_ms || '-'}ms</span>`;
+        } else {
+          cell = `<span class="tag err" style="padding:1px 6px;font-size:11px" title="${esc(status.error || '')}">✗ ${status.status || 'err'}</span>`;
+        }
+        const testedAt = status.tested_at ? `<span class="dim" style="font-size:10px">${fmtTime(status.tested_at)}</span>` : '';
+        return `<tr class="ms-model-row"><td class="mono" style="font-size:12px;padding-left:24px">${esc(model)}</td><td style="text-align:center">${cell}</td><td style="text-align:right">${testedAt}</td></tr>`;
+      }).join('') : '';
+
+      const expandIcon = expanded ? '▼' : '▶';
+      const expandHide = total === 0 ? 'style="display:none"' : '';
+
+      return `<div class="ms-chan-block" style="margin-bottom:4px;border:1px solid var(--border);border-radius:8px;overflow:hidden">
+        <div class="ms-chan-head" data-chid="${ch.id}" ${expandHide} style="display:flex;align-items:center;gap:10px;padding:8px 12px;cursor:pointer;background:var(--bg2);border-bottom:${expanded ? '1px solid var(--border)' : 'none'}">
+          <span style="font-size:11px;color:var(--cyan);width:18px;text-align:center">${expandIcon}</span>
+          <b style="font-size:13px">${esc(ch.name)}</b>
+          <span class="dim" style="font-size:11px">P${ch.priority}/W${ch.weight || 1}</span>
+          ${stateTag}
+          <span class="tag ${ratioColor}" style="padding:1px 6px;font-size:11px">${okCount}/${total}</span>
+          <span style="flex:1"></span>
+          <button class="btn ghost ms-check-btn" data-chid="${ch.id}" style="padding:2px 10px;font-size:11px">检查</button>
+        </div>
+        ${expanded ? `<table class="gw-table" style="margin:0"><tbody>
+          ${filtered.length > 0 ? modelRows : '<tr><td colspan="3"><div class="empty-tip" style="padding:10px">无匹配模型</div></td></tr>'}
+        </tbody></table>` : ''}
+      </div>`;
+    }).join('');
+
+    // 绑定事件
+    $$('.ms-chan-head').forEach(h => h.onclick = (e) => {
+      if (e.target.classList.contains('ms-check-btn')) return; // 检查按钮不触发展开
+      const id = +h.dataset.chid;
+      this.expanded[id] = !this.expanded[id];
+      this._renderTable();
+    });
+    $$('.ms-check-btn').forEach(b => b.onclick = (e) => {
+      e.stopPropagation();
+      this.checkChannel(+b.dataset.chid, b);
+    });
   },
 };
 
