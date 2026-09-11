@@ -152,6 +152,63 @@ def fetch_models(channel):
     return False, latency, err or "获取模型失败", [], {}, "", ""
 
 
+def probe_channel_models(channel, max_models=10):
+    """L2 多模型逐一探测:对渠道绑定的每个模型发一个 max_tokens=1 的 chat 请求。
+    返回 {model_name: {"ok", "status", "latency_ms", "error", "tested_at"}}
+    最多测前 max_models 个,避免渠道模型过多时耗时过长。"""
+    adapter = get_adapter(channel.adapter)
+    models = channel.models or []
+    if not models:
+        return {}
+    results = {}
+    from datetime import datetime, timezone
+    timeout_cap = min(channel.timeout or 30, 30)
+    for m in models[:max_models]:
+        upstream_model = channel.real_model(m)
+        tested_at = datetime.now(timezone.utc).isoformat()
+        try:
+            req = adapter.build_request(channel, channel.current_api_key(), upstream_model, "chat",
+                                        {"model": upstream_model,
+                                         "messages": [{"role": "user", "content": "hi"}],
+                                         "max_tokens": 1, "stream": False})
+            apply_channel_headers(channel, req.headers)
+        except Exception as e:
+            results[m] = {"ok": False, "status": 0, "latency_ms": 0,
+                           "error": f"构建请求失败: {str(e)[:120]}", "tested_at": tested_at}
+            continue
+
+        client = get_client(channel, timeout_cap)
+        t0 = time.time()
+        try:
+            resp = client.post(req.url, headers=req.headers, json=req.json_body,
+                               timeout=timeout_cap)
+            latency = int((time.time() - t0) * 1000)
+            if resp.status_code == 200:
+                results[m] = {"ok": True, "status": 200, "latency_ms": latency,
+                              "error": "", "tested_at": tested_at}
+            else:
+                try:
+                    detail = resp.json()
+                    msg = ((detail.get("error") or {}).get("message")
+                           or detail.get("message") or resp.text)
+                except ValueError:
+                    msg = resp.text
+                hint = _auth_hint(resp.status_code, msg)
+                err = f"HTTP {resp.status_code}: {str(msg)[:120]}"
+                if hint:
+                    err += f" | {hint}"
+                results[m] = {"ok": False, "status": resp.status_code,
+                              "latency_ms": latency, "error": err, "tested_at": tested_at}
+        except httpx.HTTPError as e:
+            results[m] = {"ok": False, "status": 0,
+                           "latency_ms": int((time.time() - t0) * 1000),
+                           "error": f"{type(e).__name__}", "tested_at": tested_at}
+        except Exception as e:
+            results[m] = {"ok": False, "status": 0, "latency_ms": 0,
+                           "error": str(e)[:120], "tested_at": tested_at}
+    return results
+
+
 def probe_one(channel):
     """探测单个已保存渠道并落库,返回结果 dict。
     按渠道 probe_mode 选择探测方式:models(免费) / chat(极少消耗) / off(跳过)"""

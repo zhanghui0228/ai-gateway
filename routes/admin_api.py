@@ -231,34 +231,36 @@ def delete_channel(cid):
 @admin_bp.route("/channels/<int:cid>/test", methods=["POST"])
 @admin_required
 def test_channel(cid):
-    """渠道连通性测试:发一个 1 token 的最小 chat 请求"""
+    """渠道深度测试:逐一探测渠道绑定的所有模型(每个模型发 max_tokens=1 的 chat 请求)"""
+    from gateway import probe as probe_mod
     ch = db.session.get(Channel, cid)
     if not ch:
         return jsonify({"error": "渠道不存在"}), 404
-    adapter = get_adapter(ch.adapter)
     models = ch.models or []
-    model = ch.real_model(models[0]) if models else "gpt-4o-mini"
-    try:
-        req = adapter.build_request(ch, ch.current_api_key(), model, "chat", {
-            "model": model, "messages": [{"role": "user", "content": "hi"}],
-            "max_tokens": 1, "stream": False})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 200
-    try:
-        from gateway.proxy import get_client
-        timeout = ch.timeout or int(Setting.get("default_timeout", 120))
-        client = get_client(ch, min(timeout, 30))
-        resp = client.post(req.url, headers=req.headers, json=req.json_body)
-        ok = resp.status_code == 200
-        if ok:
-            balancer.note_success(ch)
-        else:
-            balancer.note_failure(ch)
-        return jsonify({"ok": ok, "status": resp.status_code,
-                        "detail": resp.text[:300]}), 200
-    except httpx.HTTPError as e:
+    if not models:
+        return jsonify({"ok": False, "error": "渠道未配置模型,无法深度测试"}), 200
+
+    # 逐一探测所有模型(最多前 10 个)
+    results = probe_mod.probe_channel_models(ch, max_models=10)
+
+    # 汇总:任意一个模型 ok 则渠道视为在线
+    any_ok = any(r.get("ok") for r in results.values())
+    ok_count = sum(1 for r in results.values() if r.get("ok"))
+
+    if any_ok:
+        balancer.note_success(ch)
+    else:
         balancer.note_failure(ch)
-        return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 200
+
+    # 持久化 per-model 探测结果
+    ch.model_status = results
+    db.session.commit()
+
+    return jsonify({
+        "ok": any_ok,
+        "summary": f"{ok_count}/{len(results)} 模型可用",
+        "models": results,
+    }), 200
 
 
 @admin_bp.route("/channels/<int:cid>/reset_breaker", methods=["POST"])
@@ -278,6 +280,25 @@ def _channel_view(ch):
     d["breaker_state"] = state
     d["breaker_cooldown"] = int(cooldown)
     return d
+
+
+# ---------- 模型降级状态 ----------
+@admin_bp.route("/model_degradation", methods=["GET"])
+@admin_required
+def list_model_degradation():
+    """返回当前 auto 模式模型降级状态列表"""
+    from gateway import model_degradation
+    return jsonify(model_degradation.get_status())
+
+
+@admin_bp.route("/model_degradation/reset", methods=["POST"])
+@admin_required
+def reset_model_degradation():
+    """手动清除模型降级状态。body: {"model": "xxx"} 清除指定,无 body 清除全部"""
+    from gateway import model_degradation
+    data = request.get_json(silent=True) or {}
+    model_degradation.reset(data.get("model"))
+    return jsonify({"ok": True})
 
 
 # ---------- API Key ----------

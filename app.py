@@ -19,7 +19,8 @@ def _migrate_columns(app):
             "channels": [("probe_ok", "BOOLEAN"), ("probe_at", "TEXT"),
                          ("probe_latency", "INTEGER"), ("probe_error", "TEXT"),
                          ("probe_mode", "TEXT"), ("user_agent", "TEXT"),
-                         ("extra_headers", "TEXT"), ("custom_fields", "TEXT")],
+                         ("extra_headers", "TEXT"), ("custom_fields", "TEXT"),
+                         ("model_status", "TEXT")],
             "model_prices": [("context_window", "INTEGER"), ("max_output", "INTEGER")],
             "usage_logs": [("cache_read_tokens", "BIGINT"), ("cache_creation_tokens", "BIGINT")],
         }

@@ -1,12 +1,13 @@
 """转发核心:鉴权模型校验 -> 选路 -> 协议转换 -> 故障转移 -> 计费落库"""
 import json
+import re
 import time
 import uuid
 
 import httpx
 from flask import Response
 
-from . import balancer, pricing, quota
+from . import balancer, model_degradation, pricing, quota
 from .adapters.base import AdapterError, apply_channel_headers
 from .adapters.registry import get_adapter
 from .adapters.openai_compat import USAGE_SENTINEL
@@ -16,6 +17,13 @@ from .proxy import get_client
 
 # 可触发故障转移的上游状态码:鉴权失效/限流/超时/服务端错误
 FAILOVER_STATUS = {401, 403, 408, 429}
+
+# 上游返回"模型不可识别"的错误关键词(用于 auto 模式快速跳过)
+_MODEL_NOT_FOUND_PATTERNS = re.compile(
+    r"model[_\s]?not[_\s]?found|does[_\s]?not[_\s]?exist|unknown[_\s]?model|"
+    r"no[_\s]?such[_\s]?model|invalid[_\s]?model|model[_\s]?is[_\s]?not[_\s]?supported|"
+    r"找不到模型|不存在|未识别|不支持的?模型",
+    re.IGNORECASE)
 
 
 class RelayError(Exception):
@@ -39,6 +47,14 @@ def _get_timeout(channel):
 
 def _error_body(message, err_type="upstream_error", code=None):
     return {"error": {"message": message, "type": err_type, "code": code}}
+
+
+def _is_model_not_found(status_code, response_text):
+    """检测上游返回的错误是否为"模型不存在/不可识别"
+    用于 auto 模式快速跳过,避免在多个渠道间逐个重试同一个不存在的模型"""
+    if status_code not in (400, 404):
+        return False
+    return bool(_MODEL_NOT_FOUND_PATTERNS.search(response_text or ""))
 
 
 def _read_request_text(openai_body):
@@ -158,7 +174,8 @@ def _auto_candidates(api_key_row):
             for m in (ch.models or []):
                 if m not in cands:
                     cands.append(m)
-    return cands[:limit]
+    # 排序:正常模型优先,降级模型排后(冷却期内的模型仍可用但优先级降低)
+    return model_degradation.sort_candidates(cands[:limit])
 
 
 def relay_request(app, api_key_row, model, kind, openai_body):
@@ -178,13 +195,17 @@ def relay_request(app, api_key_row, model, kind, openai_body):
             try:
                 # 收紧单候选超时,给后续候选留出时间
                 per = max(10, int((deadline - time.time()) / max(1, len(cands))))
-                saved = dict(openai_body)
-                return _relay_one(app, api_key_row, m, kind, openai_body,
-                                 deadline=deadline, per_timeout=per)
+                result = _relay_one(app, api_key_row, m, kind, openai_body,
+                                   deadline=deadline, per_timeout=per)
+                # 成功:清除该模型的降级状态(如有)
+                model_degradation.record_model_success(m)
+                return result
             except RelayError as e:
-                # 404=无渠道;502=该模型所有渠道尝试失败 —— 均降级到下一候选模型
+                # 404=无渠道或模型不可识别;502=该模型所有渠道尝试失败 —— 均降级到下一候选模型
                 if e.status not in (404, 502):
                     raise
+                # 记录模型失败,后续请求自动降权
+                model_degradation.record_model_failure(m, str(e))
                 last = e
                 if time.time() >= deadline:
                     break
@@ -266,6 +287,10 @@ def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_ti
             if _failoverable(resp.status_code):
                 balancer.note_failure(channel)
                 continue
+            # 模型不可识别(400/404 + 特定错误体):立即中断,不再尝试剩余渠道
+            # auto 模式下由上层 relay_request 降级到下一候选模型
+            if _is_model_not_found(resp.status_code, resp.text):
+                raise RelayError(f"模型不可识别: {last_error}", 404)
             # 请求本身有问题(400/404/422),直接透传给客户端
             _log_failure(api_key_row, channel, model, resp.status_code, last_error,
                          attempt, started, request_text, kind=kind, ctx=ctx,
@@ -334,6 +359,9 @@ def _do_stream(app, api_key_row, channel, adapter, client, req,
         resp.close()
         if _failoverable(resp.status_code):
             raise RelayError(f"上游 {resp.status_code}: {body}")
+        # 模型不可识别:立即中断,由 auto 模式降级到下一候选
+        if _is_model_not_found(resp.status_code, body):
+            raise RelayError(f"模型不可识别: 上游 {resp.status_code}: {body}", 404)
         _log_failure(api_key_row, channel, model, resp.status_code,
                      f"上游 {resp.status_code}: {body}", attempt, started, request_text,
                      kind=kind, ctx=ctx, response_text=body)

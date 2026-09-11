@@ -112,6 +112,8 @@ class Channel(db.Model):
     probe_error = db.Column(db.String(256), default="")
     # 探测方式:models=模型列表端点(免费) / chat=聊天端点(max_tokens=1,消耗极少) / off=不探测
     probe_mode = db.Column(db.String(16), default="models")
+    # 各模型深度测试状态 {"model": {"ok": bool, "status": int, "latency_ms": int, "error": str, "tested_at": str}}
+    model_status = db.Column(JSONText, default=dict)
 
     created_at = db.Column(db.DateTime, default=utcnow)
 
@@ -141,6 +143,7 @@ class Channel(db.Model):
             "probe_ok": self.probe_ok, "probe_at": self.probe_at,
             "probe_latency": self.probe_latency, "probe_error": self.probe_error,
             "probe_mode": self.probe_mode or "models",
+            "model_status": self.model_status or {},
             "user_agent": self.user_agent or "", "extra_headers": self.extra_headers or {},
             "custom_fields": self.custom_fields or {},
             "created_at": iso_utc(self.created_at),

@@ -5,6 +5,19 @@ function disposeCharts() { CHARTS.forEach(c => c.dispose()); CHARTS = []; }
 function mkChart(el) { const c = echarts.init(el); CHARTS.push(c); return c; }
 
 /* ================= 渠道管理 ================= */
+function _modelCells(c) {
+  const models = c.models || [];
+  if (!models.length) return '<span class="dim">-</span>';
+  const status = c.model_status || {};
+  const items = models.map(m => {
+    const s = status[m];
+    if (!s) return `<span style="font-size:12px">${esc(m)} <span class="dim" style="font-size:10px">未测</span></span>`;
+    if (s.ok) return `<span style="font-size:12px">${esc(m)} <span class="tag ok" style="padding:1px 4px;font-size:10px" title="${esc(s.error || '')}">✓ ${s.latency_ms}ms</span></span>`;
+    return `<span style="font-size:12px">${esc(m)} <span class="tag err" style="padding:1px 4px;font-size:10px" title="${esc(s.error || '')}">✗ ${s.status || 'err'}</span></span>`;
+  });
+  return `<div style="max-width:220px;line-height:1.6">${items.join('<br>')}</div>`;
+}
+
 Pages.channels = {
   async render(main) {
     main.innerHTML = `
@@ -54,7 +67,7 @@ Pages.channels = {
         <td><b>${esc(c.name)}</b>${c.note ? `<div class="dim" style="font-size:11px">${esc(c.note)}</div>` : ''}</td>
         <td><span class="tag info">${esc(c.preset)}</span></td>
         <td class="mono" style="font-size:12px">${esc(c.adapter)}</td>
-        <td style="max-width:220px"><span class="dim" style="font-size:12px">${esc((c.models || []).join(', ')) || '-'}</span></td>
+        <td style="max-width:220px">${_modelCells(c)}</td>
         <td class="mono">P${c.priority} / W${c.weight}</td>
         <td>${c.proxy_url ? '<span class="proxy-badge">proxy</span>' : '<span class="dim">-</span>'}</td>
         <td style="white-space:nowrap">
@@ -328,8 +341,24 @@ Pages.channels = {
     btn.disabled = true; btn.textContent = '测试中…';
     try {
       const r = await apiPost(`/admin/api/channels/${id}/test`, {});
-      if (r.ok) toast(`连通正常 (${r.status})`, 'ok');
-      else toast(`失败: ${r.error || r.detail || r.status}`, 'err');
+      if (r.models && Object.keys(r.models).length > 0) {
+        // 多模型结果用弹窗展示
+        const rows = Object.entries(r.models).map(([m, s]) =>
+          `<tr><td class="mono" style="font-size:12px">${esc(m)}</td>` +
+          `<td>${s.ok ? '<span class="tag ok">可用</span>' : '<span class="tag err">不可用</span></td>` +
+          `<td class="mono">${s.latency_ms || '-'} ms</td>` +
+          `<td style="font-size:11px;color:#aaa;max-width:300px;word-break:break-all">${esc(s.error || '-')}</td>` +
+          `<td class="dim" style="font-size:10px">${s.tested_at ? fmtTime(s.tested_at) : '-'}</td></tr>`
+        ).join('');
+        openModal(`深度测试结果 — ${esc(r.summary || '')}`, `
+          <table class="gw-table"><thead><tr>
+            <th>模型</th><th>状态</th><th>延迟</th><th>信息</th><th>测试时间</th>
+          </tr></thead><tbody>${rows}</tbody></table>`);
+      } else if (r.ok) {
+        toast(`连通正常 (${r.status})`, 'ok');
+      } else {
+        toast(`失败: ${r.error || r.detail || r.status}`, 'err');
+      }
     } catch (e) { toast(e.message, 'err'); }
     btn.disabled = false; btn.textContent = '测试';
     this.refresh();
