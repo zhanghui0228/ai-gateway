@@ -919,25 +919,6 @@ Pages.usage = {
     }
     /* 每日模型调用明细表格式化数据备用 */
     this._dailyModelCalls = daily.model_calls || {};
-
-    const tb = $('#log-tbody');
-    tb.innerHTML = logs.length ? logs.map(l => `<tr>
-      <td class="dim" style="font-size:12px;white-space:nowrap">${fmtTime(l.created_at)}</td>
-      <td>${esc(l.key_name || '-')}</td>
-      <td>${esc(l.channel_name || '-')}</td>
-      <td class="mono" style="font-size:12px">${esc(l.model)}</td>
-      <td class="mono">${fmtTokens(l.prompt_tokens)}</td>
-      <td class="mono">${fmtTokens(l.completion_tokens)}</td>
-      <td class="mono">${l.cache_read_tokens || l.cache_creation_tokens
-        ? `<span style="color:var(--purple)" title="读 ${l.cache_read_tokens || 0} / 写 ${l.cache_creation_tokens || 0}">⚡${fmtTokens((l.cache_read_tokens || 0) + (l.cache_creation_tokens || 0))}</span>`
-        : '<span class="dim">-</span>'}</td>
-      <td class="mono">${fmtTokens(l.total_tokens)}${l.estimated ? ' <span class="dim" title="估算">≈</span>' : ''}</td>
-      <td>${fmtCost(l.cost)}</td>
-      <td class="mono">${fmtMs(l.latency_ms)}</td>
-      <td>${l.success ? '<span class="tag ok">' + l.status_code + '</span>'
-        : `<span class="tag err">${l.status_code || 'ERR'}</span>${l.retries ? ' <span class="tag warn">重试' + l.retries + '</span>' : ''}`}</td>
-      <td class="dim" style="font-size:11px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(l.error)}">${esc(l.error || '-')}</td>
-    </tr>`).join('') : `<tr><td colspan="12"><div class="empty-tip">暂无调用记录</div></td></tr>`;
   },
 };
 
