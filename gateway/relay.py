@@ -357,42 +357,84 @@ def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_ti
         client = get_client(channel, timeout)
         tried.append(channel.id)
 
-        try:
-            req = adapter.build_request(channel, channel.current_api_key(),
-                                        upstream_model, kind, openai_body)
-            apply_channel_headers(channel, req.headers)
-        except AdapterError as e:
-            last_error = str(e)
-            continue
+        # ---------- 多 key 同渠道重试 ----------
+        keys = [k.strip() for k in (channel.api_key or "").split(",") if k.strip()]
+        key_count = max(len(keys), 1)
+        # 单 key 时保持原有行为;多 key 时逐个尝试
+        for key_idx in range(key_count):
+            cur_key = keys[key_idx] if keys else channel.current_api_key()
+            try:
+                req = adapter.build_request(channel, cur_key, upstream_model, kind, openai_body)
+                apply_channel_headers(channel, req.headers)
+            except AdapterError as e:
+                last_error = str(e)
+                break  # 构建请求失败,直接换渠道
 
-        try:
-            if req.stream:
-                return _do_stream(app, api_key_row, channel, adapter, client, req,
-                                  model, kind, request_text, attempt, started, ctx,
-                                  cache_key=cache_key)
-            resp = client.post(req.url, headers=req.headers, json=req.json_body,
-                               timeout=timeout)
-        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout,
-                httpx.WriteTimeout, httpx.PoolTimeout, httpx.RemoteProtocolError) as e:
-            last_error = f"网络错误: {type(e).__name__}"
-            balancer.note_failure(channel)
-            continue
-        except RelayError as e:
-            # _do_stream 在拿到响应头之前失败(网络/可故障转移状态码),换下一渠道
-            last_error = str(e)
-            balancer.note_failure(channel)
-            continue
+            try:
+                if req.stream:
+                    return _do_stream(app, api_key_row, channel, adapter, client, req,
+                                      model, kind, request_text, attempt, started, ctx,
+                                      cache_key=cache_key)
+                resp = client.post(req.url, headers=req.headers, json=req.json_body,
+                                   timeout=timeout)
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout,
+                    httpx.WriteTimeout, httpx.PoolTimeout, httpx.RemoteProtocolError) as e:
+                last_error = f"网络错误: {type(e).__name__}"
+                if key_idx + 1 < key_count:
+                    app.logger.warning("渠道 %s key[%d] 网络错误,尝试下一个 key", channel.name, key_idx)
+                    continue  # 同渠道换下一个 key
+                balancer.note_failure(channel)
+                break  # 所有 key 都试过,换渠道
+            except RelayError as e:
+                last_error = str(e)
+                if key_idx + 1 < key_count:
+                    app.logger.warning("渠道 %s key[%d] 流错误,尝试下一个 key", channel.name, key_idx)
+                    continue
+                balancer.note_failure(channel)
+                break
 
-        if resp.status_code != 200:
+            if resp.status_code == 200:
+                # 成功
+                balancer.note_success(channel)
+                try:
+                    up_json = resp.json()
+                except ValueError:
+                    up_json = {}
+                openai_json = adapter.adapt_response(up_json, kind)
+                usage = adapter.extract_usage(up_json) if kind != "images" else {}
+                cache = adapter.extract_token_details(up_json) if kind == "chat" else {}
+                pt, ct, estimated = quota.calc_and_get_usage(model, channel, usage,
+                                                             request_text, "")
+                if not (pt or ct):
+                    pt, ct, estimated = quota.calc_and_get_usage(model, channel, {}, request_text, "")
+                cost = pricing.calc_cost(model, pt, ct, channel)
+                total = pt + ct
+                resp_text = json.dumps(openai_json, ensure_ascii=False)
+                _finish_success(api_key_row, channel, model, pt, ct, total, cost,
+                                int((time.time() - started) * 1000), False, estimated, attempt,
+                                cache_read=cache.get("cache_read", 0),
+                                cache_creation=cache.get("cache_creation", 0),
+                                kind=kind, ctx=ctx, response_text=resp_text)
+                if cache_key:
+                    channel_cache_key = f"{cache_key}:{channel.id}"
+                    cache_mod.cache.put(
+                        cache_key=channel_cache_key, kind=kind, model=model,
+                        response_body=resp_text, prompt_tokens=pt, completion_tokens=ct)
+                return Response(resp_text, status=200, content_type="application/json",
+                                headers={"X-Request-Id": request_id})
+
             last_error = f"上游 {resp.status_code}: {resp.text[:200]}"
             if _failoverable(resp.status_code):
+                if key_idx + 1 < key_count:
+                    app.logger.warning("渠道 %s key[%d] 返回 %d,尝试下一个 key",
+                                       channel.name, key_idx, resp.status_code)
+                    continue  # 同渠道换下一个 key
                 balancer.note_failure(channel)
-                continue
-            # 模型不可识别(400/404 + 特定错误体):立即中断,不再尝试剩余渠道
-            # auto 模式下由上层 relay_request 降级到下一候选模型
+                break  # 所有 key 都试过,换渠道
+            # 模型不可识别:立即中断
             if _is_model_not_found(resp.status_code, resp.text):
                 raise RelayError(f"模型不可识别: {last_error}", 404)
-            # 请求本身有问题(400/404/422),直接透传给客户端
+            # 请求本身有问题,直接透传
             _log_failure(api_key_row, channel, model, resp.status_code, last_error,
                          attempt, started, request_text, kind=kind, ctx=ctx,
                          response_text=resp.text[:2000])
@@ -400,35 +442,8 @@ def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_ti
                             content_type="application/json",
                             headers={"X-Request-Id": request_id})
 
-        # 成功
-        balancer.note_success(channel)
-        try:
-            up_json = resp.json()
-        except ValueError:
-            up_json = {}
-        openai_json = adapter.adapt_response(up_json, kind)
-        usage = adapter.extract_usage(up_json) if kind != "images" else {}
-        cache = adapter.extract_token_details(up_json) if kind == "chat" else {}
-        pt, ct, estimated = quota.calc_and_get_usage(model, channel, usage,
-                                                     request_text, "")
-        if not (pt or ct):
-            pt, ct, estimated = quota.calc_and_get_usage(model, channel, {}, request_text, "")
-        cost = pricing.calc_cost(model, pt, ct, channel)
-        total = pt + ct
-        resp_text = json.dumps(openai_json, ensure_ascii=False)
-        _finish_success(api_key_row, channel, model, pt, ct, total, cost,
-                        int((time.time() - started) * 1000), False, estimated, attempt,
-                        cache_read=cache.get("cache_read", 0),
-                        cache_creation=cache.get("cache_creation", 0),
-                        kind=kind, ctx=ctx, response_text=resp_text)
-        # 写入响应缓存(非流式 + 支持缓存的 kind,按渠道隔离)
-        if cache_key:
-            channel_cache_key = f"{cache_key}:{channel.id}"
-            cache_mod.cache.put(
-                cache_key=channel_cache_key, kind=kind, model=model,
-                response_body=resp_text, prompt_tokens=pt, completion_tokens=ct)
-        return Response(resp_text, status=200, content_type="application/json",
-                        headers={"X-Request-Id": request_id})
+        # 当前渠道所有 key 都已尝试,继续下一个渠道
+        continue
 
     # 所有候选渠道尝试失败:记录失败日志便于排查
     write_call_log(ctx["request_id"], api_key_row, last_channel, kind, ctx["model_requested"],
