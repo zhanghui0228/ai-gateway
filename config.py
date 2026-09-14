@@ -40,5 +40,5 @@ CACHE_MAX_SQLITE = 10000       # SQLite 持久化最大缓存条目数
 
 # 版本更新设置默认值(可在控制台"系统设置 → 更新设置"中覆盖)
 UPDATE_REPO = "https://github.com/zhanghui0228/ai-gateway.git"          # 主更新源仓库 URL
-UPDATE_REPO_FALLBACK = "https://gitcode.com/zhanghui0228/ai-gateway.git"  # 备用更新源仓库 URL(主源不可达时自动切换)
+UPDATE_REPO_FALLBACK = "https://gitcode.com/zhh0228/ai-gateway.git"  # 备用更新源仓库 URL(主源不可达时自动切换)
 UPDATE_BRANCH = "main"                                             # 更新源分支

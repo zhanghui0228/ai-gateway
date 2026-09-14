@@ -78,3 +78,13 @@ def default_settings():
     for k, v in defaults.items():
         if Setting.get(k) is None:
             Setting.set(k, v)
+
+
+def fix_settings():
+    """自愈修正:将已知错误/过期的设置值更新为正确值(仅修正,不影响用户自定义)"""
+    # 历史错误:早期版本将备用源写成 zhanghui0228(应为 zhh0228)
+    wrong = "https://gitcode.com/zhanghui0228/ai-gateway.git"
+    correct = config.UPDATE_REPO_FALLBACK
+    cur = Setting.get("update_repo_fallback")
+    if cur and cur.strip() == wrong:
+        Setting.set("update_repo_fallback", correct)
