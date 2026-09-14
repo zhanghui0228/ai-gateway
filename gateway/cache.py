@@ -19,6 +19,10 @@ _CACHE_KEY_FIELDS = (
     "logit_bias", "logprobs", "top_logprobs",
     "input",   # embeddings
     "stream",  # 区分流式/非流式,确保缓存键不同
+    # include_usage 等:显式关闭 usage 的请求与未设置/开启的请求响应不同,
+    # 纳入缓存键可避免向未请求 usage 的客户端回放 usage chunk
+    "stream_options",
+    "user",    # 各厂商按 user 做风控/统计,纳入键保证条目隔离
 )
 
 # 每种 kind 的默认 TTL(秒)
@@ -204,6 +208,8 @@ class ResponseCache:
             db.session.commit()
         except Exception:
             db.session.rollback()
+        # 超出 cache_max_sqlite 上限时按 LRU 淘汰(独立事务,失败不影响写入)
+        self._prune_sqlite()
 
     def put_stream(self, cache_key: str, kind: str, model: str,
                    chunks: list, prompt_tokens: int, completion_tokens: int):
@@ -243,6 +249,8 @@ class ResponseCache:
             db.session.commit()
         except Exception:
             db.session.rollback()
+        # 超出 cache_max_sqlite 上限时按 LRU 淘汰(独立事务,失败不影响写入)
+        self._prune_sqlite()
 
     def record_hit_event(self, cache_key, model, kind, prompt_tokens, completion_tokens, saved_cost):
         """记录缓存命中事件(供趋势图和最近记录查询)"""
@@ -297,6 +305,8 @@ class ResponseCache:
             cutoff = now - timedelta(days=7)
             CacheEvent.query.filter(CacheEvent.created_at < cutoff).delete(synchronize_session=False)
             db.session.commit()
+            # 同时按容量上限淘汰(防止响应缓存表无界增长)
+            self._prune_sqlite()
             return n
         except Exception:
             db.session.rollback()
@@ -392,6 +402,32 @@ class ResponseCache:
         max_mem = _get_max_memory()
         while len(self._lru) > max_mem:
             self._lru.popitem(last=False)
+
+    def _prune_sqlite(self):
+        """SQLite 容量上限淘汰: 超出 cache_max_sqlite 时按 LRU 淘汰最旧条目。
+        SQLite 中 last_hit_at 为 NULL(从未命中)的条目优先淘汰(ASC 排序 NULL 在前),
+        其余按最后命中时间旧 -> 新依次淘汰;同时同步清掉内存 LRU 中的对应条目。"""
+        max_n = _get_max_sqlite()
+        try:
+            total = ResponseCacheEntry.query.count()
+            if total <= max_n:
+                return
+            excess = total - max_n
+            keys = [r[0] for r in (
+                db.session.query(ResponseCacheEntry.cache_key)
+                .order_by(ResponseCacheEntry.last_hit_at.asc(),
+                          ResponseCacheEntry.created_at.asc())
+                .limit(excess).all())]
+            if not keys:
+                return
+            ResponseCacheEntry.query.filter(
+                ResponseCacheEntry.cache_key.in_(keys)).delete(synchronize_session=False)
+            db.session.commit()
+            with self._lock:
+                for k in keys:
+                    self._lru.pop(k, None)
+        except Exception:
+            db.session.rollback()
 
     def _note_hit(self):
         """记录每小时命中数(内存级,用于快速统计)"""

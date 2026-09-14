@@ -205,5 +205,56 @@ with _app_mod.app.app_context():
     Channel.query.delete()
     _db.session.commit()
 
+# ================= 响应缓存键 =================
+print("== 响应缓存键 ==")
+from gateway.cache import build_cache_key as _bck
+_b1 = {"model": "m", "messages": [{"role": "user", "content": "hi"}], "stream": True}
+_k1 = _bck("chat", "m", _b1)
+check("cache key 幂等", _k1 == _bck("chat", "m", dict(_b1)))
+_b2 = dict(_b1); _b2["stream_options"] = {"include_usage": True}
+check("cache key 区分 stream_options", _bck("chat", "m", _b2) != _k1)
+_b3 = dict(_b1); _b3["user"] = "u1"
+check("cache key 区分 user", _bck("chat", "m", _b3) != _k1)
+_b4 = dict(_b1); _b4["messages"] = [{"role": "user", "content": "hello"}]
+check("cache key 区分 messages", _bck("chat", "m", _b4) != _k1)
+check("cache key 区分流式/非流式", _bck("chat", "m", {"model": "m", "messages": []}) !=
+      _bck("chat", "m", {"model": "m", "messages": [], "stream": True}))
+
+# ================= SQLite 缓存容量淘汰(独立内存库,不污染开发数据) =================
+print("== SQLite 缓存容量淘汰 ==")
+from flask import Flask as _Flask
+from gateway import cache as _cache_mod
+from gateway.db import db as _gdb
+from gateway.models import ResponseCacheEntry as _RCE
+_app2 = _Flask(__name__)
+_app2.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///:memory:"
+_app2.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+_gdb.init_app(_app2)
+with _app2.app_context():
+    _gdb.create_all()
+    from gateway.models import Setting as _Setting
+    _Setting.set("cache_max_sqlite", "100")
+    for i in range(105):
+        _cache_mod.cache.put(f"k{i:04d}", "chat", "m", '{"x":1}', 10, 5)
+    total = _RCE.query.count()
+    check("SQLite 容量上限生效", total == 100, total)
+    check("内存 LRU 同步淘汰", len(_cache_mod.cache._lru) <= 100, len(_cache_mod.cache._lru))
+
+# ================= 客户端 IP 提取 =================
+print("== 客户端 IP 提取 ==")
+from gateway import relay as _relay
+with _app2.test_request_context(headers={"X-Real-IP": "1.2.3.4",
+                                         "X-Forwarded-For": "9.9.9.9, 8.8.8.8",
+                                         "User-Agent": "ua-test"}):
+    _ip, _ua = _relay._client_info()
+    check("X-Real-IP 优先", _ip == "1.2.3.4", _ip)
+    check("User-Agent 提取", _ua == "ua-test", _ua)
+with _app2.test_request_context(headers={"X-Forwarded-For": "9.9.9.9, 8.8.8.8"}):
+    _ip, _ua = _relay._client_info()
+    check("X-Forwarded-For 回退", _ip == "9.9.9.9", _ip)
+with _app2.test_request_context(environ_overrides={"REMOTE_ADDR": "203.0.113.5"}):
+    _ip, _ua = _relay._client_info()
+    check("remote_addr 回退", _ip == "203.0.113.5", _ip)
+
 print(f"\n结果: {PASS} 通过, {FAIL} 失败")
 sys.exit(1 if FAIL else 0)

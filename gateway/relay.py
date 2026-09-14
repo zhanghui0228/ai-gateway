@@ -74,12 +74,14 @@ def _read_request_text(openai_body):
 
 
 def _client_info():
-    """从当前请求上下文提取客户端 IP 与 User-Agent(生成器阶段上下文已失效,需提前取)"""
+    """从当前请求上下文提取客户端 IP 与 User-Agent(生成器阶段上下文已失效,需提前取)
+    IP 优先级:X-Real-IP(反向代理设置的单值头) → X-Forwarded-For 首段 → remote_addr"""
     try:
         from flask import has_request_context, request
         if has_request_context():
-            ip = (request.headers.get("X-Forwarded-For") or request.remote_addr or "")
-            ip = ip.split(",")[0].strip()
+            ip = (request.headers.get("X-Real-IP")
+                  or (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+                  or request.remote_addr or "")
             return ip[:64], (request.headers.get("User-Agent") or "")[:256]
     except Exception:
         pass
@@ -464,6 +466,7 @@ def _do_stream(app, api_key_row, channel, adapter, client, req,
         collected_chunks = []  # 收集所有 SSE data 用于缓存
         usage = {}
         status_code, error_msg = 200, ""
+        completed = False  # 上游流完整结束且已全部转发;客户端断开时保持 False,禁止缓存截断响应
         with real_app.app_context():
             try:
                 for item in adapter.transform_stream(_sse_data_lines(resp)):
@@ -482,10 +485,15 @@ def _do_stream(app, api_key_row, channel, adapter, client, req,
                     except (ValueError, TypeError, IndexError, KeyError):
                         pass
                     yield f"data: {data}\n\n"
+                completed = True
             except (httpx.ReadError, httpx.RemoteProtocolError) as e:
                 status_code, error_msg = 502, f"流中断: {type(e).__name__}"
                 yield f"data: {json.dumps(_error_body(error_msg), ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
+            except GeneratorExit:
+                # 客户端提前断开:不缓存不完整流,记失败便于排查;继续向上传播
+                status_code, error_msg = 499, "客户端中断"
+                raise
             finally:
                 try:
                     resp.close()
@@ -495,23 +503,27 @@ def _do_stream(app, api_key_row, channel, adapter, client, req,
                     model, None, usage, request_text, "".join(collected_text))
                 cost = pricing.calc_cost(model, pt, ct, channel)
                 latency = int((time.time() - started) * 1000)
-                if status_code == 200:
-                    _finish_success(api_key_row, channel, model, pt, ct, pt + ct, cost,
-                                    latency, True, estimated, attempt,
-                                    cache_read=usage.get("cache_read", 0),
-                                    cache_creation=usage.get("cache_creation", 0),
-                                    kind=kind, ctx=ctx,
-                                    response_text="".join(collected_text))
-                    # 流式写入缓存(成功且有 cache_key)
-                    if cache_key and collected_chunks:
-                        cache_mod.cache.put_stream(
-                            cache_key=cache_key, kind=kind, model=model,
-                            chunks=collected_chunks,
-                            prompt_tokens=pt, completion_tokens=ct)
-                else:
-                    _log_failure(api_key_row, channel, model, status_code, error_msg,
-                                 attempt, started, request_text, kind=kind, ctx=ctx,
-                                 response_text="".join(collected_text))
+                try:
+                    if status_code == 200 and completed:
+                        _finish_success(api_key_row, channel, model, pt, ct, pt + ct, cost,
+                                        latency, True, estimated, attempt,
+                                        cache_read=usage.get("cache_read", 0),
+                                        cache_creation=usage.get("cache_creation", 0),
+                                        kind=kind, ctx=ctx,
+                                        response_text="".join(collected_text))
+                        # 流式写入缓存(仅在流完整结束时写入,避免缓存截断响应)
+                        if cache_key and collected_chunks:
+                            cache_mod.cache.put_stream(
+                                cache_key=cache_key, kind=kind, model=model,
+                                chunks=collected_chunks,
+                                prompt_tokens=pt, completion_tokens=ct)
+                    else:
+                        _log_failure(api_key_row, channel, model, status_code, error_msg,
+                                     attempt, started, request_text, kind=kind, ctx=ctx,
+                                     response_text="".join(collected_text))
+                except Exception:
+                    # 日志/缓存落库失败不应干扰流结束或 GeneratorExit 传播
+                    pass
 
     return Response(generate(), status=200,
                     content_type="text/event-stream; charset=utf-8",
