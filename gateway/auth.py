@@ -1,10 +1,13 @@
 """鉴权:管理员 session + 对外 API Key 校验"""
+import logging
 from functools import wraps
 
 from flask import jsonify, request, session
 
 import config
 from .models import Admin, ApiKey, Setting
+
+logger = logging.getLogger(__name__)
 
 
 def admin_required(f):
@@ -39,8 +42,10 @@ def api_key_required(f):
         try:
             from . import quota
             ok, remaining = quota.check_quota(row)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error("配额检查异常,拒绝请求: %s", e, exc_info=True)
+            return jsonify({"error": {"message": "配额检查失败,请稍后重试", "type": "quota_error",
+                                       "code": "quota_check_failed"}}), 503
         if not ok:
             return jsonify({"error": {"message": "额度已耗尽", "type": "quota_exceeded",
                                        "code": "insufficient_quota"}}), 429

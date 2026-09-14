@@ -7,7 +7,7 @@ from flask import Flask, jsonify, redirect, render_template, request, send_from_
 from sqlalchemy import inspect, text
 
 import config
-from gateway.auth import init_admin, admin_required, default_settings, fix_settings, fix_settings
+from gateway.auth import init_admin, admin_required, default_settings, fix_settings
 from gateway.db import db
 from gateway import pricing
 from gateway.models import Channel

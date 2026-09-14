@@ -33,6 +33,16 @@ def _now():
     return datetime.now(timezone.utc)
 
 
+def _utc_from_naive(dt):
+    """将 SQLite 读取的 naive datetime 统一转为 UTC aware datetime。
+    SQLite 存储会丢失 tzinfo,所有写入均为 UTC,读取时按此假设还原。"""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def should_cache(kind, body):
     """判断请求是否可缓存: 支持的 kind（流式由 cache_stream 设置控制）"""
     if kind not in _KIND_TTL:
@@ -137,7 +147,7 @@ class ResponseCache:
 
         # 查 SQLite
         row = db.session.get(ResponseCacheEntry, cache_key)
-        if row and row.expires_at and row.expires_at.replace(tzinfo=timezone.utc) > _now():
+        if row and row.expires_at and _utc_from_naive(row.expires_at) > _now():
             # 加载到内存 LRU
             chunks = json.loads(row.chunks) if row.chunks else None
             entry = _CacheEntry(
@@ -159,7 +169,7 @@ class ResponseCache:
                 db.session.rollback()
             return entry
 
-        if row and row.expires_at and row.expires_at.replace(tzinfo=timezone.utc) <= _now():
+        if row and row.expires_at and _utc_from_naive(row.expires_at) <= _now():
             # SQLite 中也过期,删除
             try:
                 db.session.delete(row)
@@ -378,7 +388,7 @@ class ResponseCache:
             entry = db.session.get(ResponseCacheEntry, r.cache_key)
             ttl_left = 0
             if entry and entry.expires_at:
-                remaining = (entry.expires_at.replace(tzinfo=timezone.utc) - now).total_seconds()
+                remaining = (_utc_from_naive(entry.expires_at) - now).total_seconds()
                 ttl_left = max(0, int(remaining))
             # 判断是否为流式缓存
             entry_row = db.session.get(ResponseCacheEntry, r.cache_key)

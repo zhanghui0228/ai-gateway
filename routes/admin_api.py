@@ -4,7 +4,7 @@ import httpx
 from flask import (Blueprint, current_app, jsonify, request, session)
 
 import config
-from gateway import balancer, events, pricing, stats, updater, updater
+from gateway import balancer, events, pricing, stats, updater
 from gateway.auth import admin_required, default_settings
 from gateway.db import db
 from gateway.models import Admin, ApiKey, Channel, ModelPrice, Preset, Setting, UsageLog
@@ -32,7 +32,10 @@ def login():
         return jsonify({"error": "密码错误"}), 401
     session["admin_id"] = admin.id
     session.permanent = True
-    return jsonify({"ok": True, "username": admin.username})
+    # 检测是否仍在使用默认密码,是则前端应强制跳转修改密码
+    from werkzeug.security import check_password_hash
+    force_change = check_password_hash(admin.password_hash, config.DEFAULT_ADMIN_PASSWORD)
+    return jsonify({"ok": True, "username": admin.username, "force_change_password": force_change})
 
 
 @admin_bp.route("/logout", methods=["POST"])
