@@ -1,6 +1,7 @@
 """版本更新模块单元测试(离线,git/docker 子进程调用均以 mock 替换)"""
 import os
 import sys
+import tempfile
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -265,6 +266,22 @@ with mock.patch.object(updater, "_run", side_effect=_fake_run_fail_fetch):
     r = updater.apply_update(s2)
 check("apply 全部节点不可达", r.get("ok") is False
       and "所有更新源均不可达" in (r.get("message") or ""), str(r))
+
+
+# ================= 仓库根目录定位(非仓库目录启动场景) =================
+print("== 仓库根目录定位 ==")
+_root = updater._repo_root()
+check("找到仓库根目录", _root is not None
+      and os.path.exists(os.path.join(_root, ".git")), str(_root))
+
+_saved_root = updater._GIT_ROOT
+updater._GIT_ROOT = None   # 清缓存,模拟独立场景
+_tmp = tempfile.mkdtemp()
+with mock.patch.object(updater.config, "BASE_DIR", _tmp):
+    check("非仓库目录返回 None", updater._repo_root() is None, str(updater._repo_root()))
+    _ok, _out = updater._git("rev-parse", "--show-toplevel")
+    check("非仓库目录给出明确提示", _ok is False and "不是 git 仓库" in _out, _out)
+updater._GIT_ROOT = _saved_root
 
 print(f"\n结果: PASS {PASS}  FAIL {FAIL}")
 sys.exit(1 if FAIL else 0)

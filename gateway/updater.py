@@ -51,6 +51,25 @@ def validate_branch(branch):
 
 
 # ---------- 命令执行 ----------
+_GIT_ROOT = None     # 缓存的仓库根目录
+
+
+def _repo_root():
+    """从项目根向上查找包含 .git 的仓库根目录(找到后缓存),找不到返回 None"""
+    global _GIT_ROOT
+    if _GIT_ROOT:
+        return _GIT_ROOT
+    d = os.path.abspath(config.BASE_DIR)
+    while True:
+        if os.path.exists(os.path.join(d, ".git")):
+            _GIT_ROOT = d
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+
+
 def _run(cmd, timeout=60, cwd=None):
     """执行命令(参数列表,不经 shell),返回 (ok, output)"""
     try:
@@ -69,13 +88,22 @@ def _run(cmd, timeout=60, cwd=None):
 
 
 def _git(*args, timeout=60, cwd=None):
+    """执行 git 命令。cwd 默认取仓库根目录(从 BASE_DIR 向上查找 .git),
+    避免服务启动目录与仓库不一致时报 'not a git repository'
+    (systemd / 任务计划 / 容器内非 WORKDIR 路径启动等场景)。"""
+    if cwd is None:
+        cwd = _repo_root()
+        if not cwd:
+            return False, ("当前部署目录不是 git 仓库,无法检查/更新版本。"
+                           "请以 git clone 方式部署(勿在 .dockerignore 排除 .git / 勿用非 git 方式拷贝代码)")
     return _run([GIT, *args], timeout=timeout, cwd=cwd)
 
 
 # ---------- 本地版本 ----------
 def current_version(cwd=None):
     """本地版本信息 {sha, short, date, subject};非 git 仓库返回 None"""
-    ok, out = _git("show", "-s", "--format=%H%n%cI%n%s", "HEAD", cwd=cwd or config.BASE_DIR)
+    ok, out = _git("show", "-s", "--format=%H%n%cI%n%s", "HEAD",
+                   cwd=cwd or _repo_root() or config.BASE_DIR)
     if not ok:
         return None
     lines = out.split("\n")
