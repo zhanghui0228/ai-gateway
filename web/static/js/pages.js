@@ -1490,7 +1490,6 @@ Pages.dashboard = {
     try { heat = await api('/admin/api/stats/hourly_heatmap?days=7'); } catch (e) { heat = []; }
     try { cacheSt = await api('/admin/api/cache/stats'); } catch (e) { cacheSt = {}; }
     try { cacheTrend = await api('/admin/api/cache/trend?hours=24'); } catch (e) { cacheTrend = []; }
-    try {
     $('#d-stats').innerHTML = [
       ['今日调用', ov.total_calls, 'cyan'], ['今日 Tokens', fmtTokens(ov.today_tokens), 'purple'],
       ['平均延迟', fmtMs(ov.avg_latency_ms), 'amber'], ['在线渠道', `${ov.online_channels} / ${ov.total_channels}`, 'green'],
