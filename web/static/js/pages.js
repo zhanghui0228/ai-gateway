@@ -38,7 +38,7 @@ Pages.channels = {
       <div class="panel" style="padding:6px 10px">
         <table class="gw-table"><thead><tr>
           <th>状态</th><th>探测</th><th>名称</th><th>预设</th><th>适配器</th><th>模型</th>
-          <th>优先级/权重</th><th>代理</th><th>操作</th>
+          <th>梯队/优先级</th><th>代理</th><th>操作</th>
         </tr></thead><tbody id="chan-tbody"></tbody></table>
       </div>`;
     $('#btn-add-chan').onclick = () => this.edit(null);
@@ -79,7 +79,7 @@ Pages.channels = {
         <td><span class="tag info">${esc(c.preset)}</span></td>
         <td style="font-size:12px">${esc(_adapterLabels[c.adapter] || c.adapter)}</td>
         <td style="max-width:220px">${_modelCells(c)}</td>
-        <td class="mono">P${c.priority} / W${c.weight}</td>
+        <td class="mono">${c.tier ? `<span class="tier-badge tier-${c.tier}" title="${esc(c.tier_label)}">T${c.tier}</span>` : '<span class="dim">-</span>'} P${c.priority} / W${c.weight}</td>
         <td>${c.proxy_url ? '<span class="proxy-badge">proxy</span>' : '<span class="dim">-</span>'}</td>
         <td style="white-space:nowrap">
           <button class="btn ghost" style="padding:3px 9px;font-size:12px" data-act="probe" data-id="${c.id}">探测</button>
@@ -119,7 +119,7 @@ Pages.channels = {
       } catch (e) { c = row; }
     }
     const p = c || {name: '', preset: 'custom', adapter: 'openai_compat', base_url: '',
-      api_key: '', models: [], model_mapping: {}, weight: 1, priority: 0, enabled: true,
+      api_key: '', models: [], model_mapping: {}, weight: 1, priority: 0, tier: 0, enabled: true,
       proxy_url: '', pricing_override: {}, timeout: 0, note: '', azure_api_version: '2024-10-21',
       probe_mode: 'models'};
     // 编辑态 Key 为掩码(如 sk-ab***cd):留空保存则保持原 Key 不变
@@ -150,10 +150,24 @@ Pages.channels = {
           <button class="btn" style="white-space:nowrap" id="btn-fetch-models">⟳ 自动获取</button>
         </div>
         <div class="hint" id="fetch-hint">从上游模型列表端点拉取(不消耗 token)</div>
-        <div id="fetch-result" style="max-height:130px;overflow-y:auto;margin-top:6px"></div></div>
+        <div id="fetch-result" style="max-height:130px;overflow-y:auto;margin-top:6px;display:none">
+          <div style="display:flex;gap:8px;margin-bottom:6px">
+            <input id="f-model-filter" placeholder="🔍 模糊搜索模型名…" style="flex:1;padding:4px 8px;font-size:12px">
+            <span id="f-model-filter-count" class="dim" style="font-size:12px;align-self:center"></span>
+          </div>
+          <div id="fetch-result-list"></div>
+        </div></div>
       <div class="field"><label>模型映射(JSON,对外名→上游真实名,可选)</label>
         <textarea id="f-mapping" rows="2" class="mono" style="resize:vertical">${esc(JSON.stringify(p.model_mapping || {}, null, 0))}</textarea></div>
       <div class="form-row">
+        <div class="field"><label>梯队</label>
+          <select id="f-tier">
+            <option value="0" ${!p.tier ? 'selected' : ''}>未分类</option>
+            <option value="1" ${p.tier === 1 ? 'selected' : ''}>第一梯队(主渠道)</option>
+            <option value="2" ${p.tier === 2 ? 'selected' : ''}>第二梯队(备用)</option>
+            <option value="3" ${p.tier === 3 ? 'selected' : ''}>第三梯队(兜底)</option>
+          </select>
+          <div class="hint">设置梯队后自动映射优先级(可手动覆盖)</div></div>
         <div class="field"><label>优先级(大者优先)</label><input id="f-pri" type="number" value="${p.priority}"></div>
         <div class="field"><label>权重(同级分流)</label><input id="f-w" type="number" min="1" value="${p.weight}"></div>
         <div class="field"><label>超时秒(0=默认)</label><input id="f-timeout" type="number" min="0" value="${p.timeout || 0}"></div>
@@ -237,11 +251,73 @@ Pages.channels = {
     };
     // 自动获取模型(L1 免费探测,直连上游模型列表端点,附带元数据)
     let fetchedMeta = [];
+    let fetchedAll = [];
+    const renderFetchedList = (filter) => {
+      const q = (filter || '').trim().toLowerCase();
+      const list = q ? fetchedAll.filter(m => m.id.toLowerCase().includes(q)) : fetchedAll;
+      $('#f-model-filter-count').textContent = q ? `${list.length} / ${fetchedAll.length}` : `${fetchedAll.length} 个模型`;
+      const box = $('#fetch-result-list');
+      if (!list.length) { box.innerHTML = '<span class="dim" style="font-size:12px">无匹配模型</span>'; return; }
+      const withMeta = list.filter(m => m.source);
+      const metaNote = withMeta.length
+        ? `<div class="dim" style="font-size:11px;margin-bottom:6px">${withMeta.length} 个模型带元数据</div>` : '';
+      box.innerHTML = metaNote + `<table class="gw-table" style="font-size:12px"><thead><tr>
+          <th style="width:32px"></th><th>模型</th><th>上下文</th><th>最大输出</th>
+          <th>输入价</th><th>输出价</th><th>来源</th></tr></thead><tbody>` +
+        list.map((m) => {
+          const i = fetchedAll.indexOf(m);
+          const selected = i < 50 && !q;
+          return `<tr data-i="${i}" class="fm-row" style="cursor:pointer">
+            <td><input type="checkbox" class="fm-ck" ${selected ? 'checked' : ''}></td>
+            <td class="mono">${esc(m.id)}</td>
+            <td class="mono">${m.context ? fmtTokens(m.context) : '-'}</td>
+            <td class="mono">${m.max_output ? fmtTokens(m.max_output) : '-'}</td>
+            <td class="mono">${m.input_price != null ? '¥' + m.input_price : '-'}</td>
+            <td class="mono">${m.output_price != null ? '¥' + m.output_price : '-'}</td>
+            <td>${m.source === 'upstream' ? '<span class="tag ok">上游</span>'
+                : m.source === 'builtin' ? '<span class="tag info">知识库</span>'
+                : '<span class="dim">-</span>'}</td></tr>`;
+        }).join('') + '</tbody></table>' +
+        `<div style="margin-top:8px;display:flex;gap:8px">
+           <button class="btn ghost" style="padding:4px 12px;font-size:12px" id="fm-all">全选</button>
+           <button class="btn ghost" style="padding:4px 12px;font-size:12px" id="fm-none">全不选</button>
+           <button class="btn" style="padding:4px 12px;font-size:12px" id="fm-apply">填入已选 (N)</button></div>`;
+      const syncCount = () => {
+        const n = $$('.fm-ck').filter(c => c.checked).length;
+        $('#fm-apply').textContent = `填入已选 (${n})`;
+      };
+      $$('.fm-row').forEach(tr => tr.onclick = e => {
+        if (e.target.tagName === 'INPUT') return;
+        const ck = tr.querySelector('.fm-ck');
+        ck.checked = !ck.checked;
+        syncCount();
+      });
+      $$('.fm-ck').forEach(c => c.onclick = e => e.stopPropagation());
+      $$('.fm-ck').forEach(c => c.onchange = syncCount);
+      $('#fm-all').onclick = () => { $$('.fm-ck').forEach(c => c.checked = true); syncCount(); };
+      $('#fm-none').onclick = () => { $$('.fm-ck').forEach(c => c.checked = false); syncCount(); };
+      syncCount();
+      $('#fm-apply').onclick = () => {
+        const sel = $$('.fm-ck').map((c, i) => c.checked ? fetchedAll[i] : null).filter(Boolean);
+        $('#f-models').value = sel.map(m => m.id).join(', ');
+        const items = sel.filter(m => m.source).map(m => ({
+          model: m.id,
+          ...(m.context ? {context_window: m.context} : {}),
+          ...(m.max_output ? {max_output: m.max_output} : {}),
+          ...(m.input_price != null ? {input_price: m.input_price, output_price: m.output_price || 0} : {}),
+        }));
+        if (items.length) {
+          apiPost('/admin/api/prices', {items, only_missing: true})
+            .then(() => toast(`已同步 ${items.length} 个模型的元数据/参考价`, 'ok'))
+            .catch(e => toast('元数据同步失败: ' + e.message, 'err'));
+        }
+      };
+    };
     $('#btn-fetch-models').onclick = async () => {
       const hint = $('#fetch-hint'), box = $('#fetch-result');
       hint.style.color = '';
       hint.textContent = '探测中…';
-      box.innerHTML = '';
+      box.style.display = 'none';
       try {
         const r = await apiPost('/admin/api/channels/fetch_models', {
           channel_id: isEdit ? p.id : null,
@@ -253,70 +329,20 @@ Pages.channels = {
         if (!r.ok) { hint.textContent = '失败: ' + (r.error || ''); hint.style.color = 'var(--red)'; return; }
         hint.style.color = r.warning ? 'var(--amber)' : '';
         hint.textContent = r.warning
-          ? `⚠ ${r.warning};已获取 ${r.models.length} 个模型,延迟 ${r.latency_ms}ms`
-          : `获取成功(${r.models.length} 个模型,延迟 ${r.latency_ms}ms);勾选后保存,元数据与参考价将写入模型单价表`;
-        if (!r.models.length) { box.innerHTML = '<span class="dim" style="font-size:12px">上游未返回模型列表</span>'; return; }
+          ? `⚠ ${r.warning};已获取 ${r.total_count} 个模型,延迟 ${r.latency_ms}ms`
+          : `获取成功(${r.total_count} 个模型,延迟 ${r.latency_ms}ms);勾选后保存,元数据与参考价将写入模型单价表`;
+        if (!r.models.length) { box.innerHTML = '<span class="dim" style="font-size:12px">上游未返回模型列表</span>'; box.style.display = ''; return; }
+        fetchedAll = r.models;
         fetchedMeta = r.models;
-        const withMeta = r.models.filter(m => m.source);
-        const metaNote = withMeta.length
-          ? `<div class="dim" style="font-size:11px;margin-bottom:6px">${withMeta.length} 个模型带元数据(${r.models.some(m => m.source === 'upstream') ? '上游返回' : ''}${r.models.some(m => m.source === 'builtin') ? ' + 知识库匹配' : ''})</div>` : '';
-        box.innerHTML = metaNote + `<table class="gw-table" style="font-size:12px"><thead><tr>
-            <th style="width:32px"></th><th>模型</th><th>上下文</th><th>最大输出</th>
-            <th>输入价</th><th>输出价</th><th>来源</th></tr></thead><tbody>` +
-          r.models.map((m, i) => {
-            const selected = i < 50;
-            return `<tr data-i="${i}" class="fm-row" style="cursor:pointer">
-              <td><input type="checkbox" class="fm-ck" ${selected ? 'checked' : ''}></td>
-              <td class="mono">${esc(m.id)}</td>
-              <td class="mono">${m.context ? fmtTokens(m.context) : '-'}</td>
-              <td class="mono">${m.max_output ? fmtTokens(m.max_output) : '-'}</td>
-              <td class="mono">${m.input_price != null ? '¥' + m.input_price : '-'}</td>
-              <td class="mono">${m.output_price != null ? '¥' + m.output_price : '-'}</td>
-              <td>${m.source === 'upstream' ? '<span class="tag ok">上游</span>'
-                  : m.source === 'builtin' ? '<span class="tag info">知识库</span>'
-                  : '<span class="dim">-</span>'}</td></tr>`;
-          }).join('') + '</tbody></table>' +
-          `<div style="margin-top:8px;display:flex;gap:8px">
-             <button class="btn ghost" style="padding:4px 12px;font-size:12px" id="fm-all">全选</button>
-             <button class="btn ghost" style="padding:4px 12px;font-size:12px" id="fm-none">全不选</button>
-             <button class="btn" style="padding:4px 12px;font-size:12px" id="fm-apply">填入已选 (N)</button></div>`;
-        const syncCount = () => {
-          const n = $$('.fm-ck').filter(c => c.checked).length;
-          $('#fm-apply').textContent = `填入已选 (${n})`;
-        };
-        $$('.fm-row').forEach(tr => tr.onclick = e => {
-          if (e.target.tagName === 'INPUT') return;
-          const ck = tr.querySelector('.fm-ck');
-          ck.checked = !ck.checked;
-        });
-        $$('.fm-ck').forEach(c => c.onclick = e => e.stopPropagation());
-        $$('.fm-ck').forEach(c => c.onchange = syncCount);
-        $('#fm-all').onclick = () => { $$('.fm-ck').forEach(c => c.checked = true); syncCount(); };
-        $('#fm-none').onclick = () => { $$('.fm-ck').forEach(c => c.checked = false); syncCount(); };
-        syncCount();
-        $('#fm-apply').onclick = () => {
-          const sel = $$('.fm-ck').map((c, i) => c.checked ? fetchedMeta[i] : null).filter(Boolean);
-          $('#f-models').value = sel.map(m => m.id).join(', ');
-          // 元数据 + 参考价写入单价表(仅补缺失,不覆盖已有配置)
-          const items = sel.filter(m => m.source).map(m => ({
-            model: m.id,
-            ...(m.context ? {context_window: m.context} : {}),
-            ...(m.max_output ? {max_output: m.max_output} : {}),
-            ...(m.input_price != null ? {input_price: m.input_price, output_price: m.output_price || 0} : {}),
-          }));
-          if (items.length) {
-            apiPost('/admin/api/prices', {items, only_missing: true})
-              .then(() => toast(`已同步 ${items.length} 个模型的元数据/参考价`, 'ok'))
-              .catch(e => toast('元数据同步失败: ' + e.message, 'err'));
-          }
-        };
+        box.style.display = '';
+        renderFetchedList();
         if (!$('#f-models').value.trim()) {
           $$('.fm-ck').slice(0, 50).forEach(c => c.checked = true);
           $('#f-models').value = r.models.slice(0, 50).map(m => m.id).join(', ');
-          syncCount();
         }
       } catch (e) { hint.textContent = '失败: ' + e.message; hint.style.color = 'var(--red)'; }
     };
+    $('#f-model-filter').oninput = function() { renderFetchedList(this.value); };
     $('#btn-save-chan').onclick = async () => {
       // 收集预设自定义字段值
       const customFields = {};
@@ -333,6 +359,8 @@ Pages.channels = {
         api_key: $('#f-key').value.trim(), models: $('#f-models').value.split(',').map(s => s.trim()).filter(Boolean),
         model_mapping: JSON.parse($('#f-mapping').value || '{}'),
         weight: +$('#f-w').value || 1, priority: +$('#f-pri').value || 0,
+        tier: +$('#f-tier').value || 0,
+        tier: +$('#f-tier').value || 0,
         enabled: $('#f-enabled').checked, proxy_url: $('#f-proxy').value.trim(),
         timeout: +$('#f-timeout').value || 0, note: $('#f-note').value.trim(),
         probe_mode: $('#f-probemode').value,
@@ -503,7 +531,7 @@ Pages.model_status = {
         <div class="ms-chan-head" data-chid="${ch.id}" ${expandHide} style="display:flex;align-items:center;gap:10px;padding:8px 12px;cursor:pointer;background:var(--bg2);border-bottom:${expanded ? '1px solid var(--border)' : 'none'}">
           <span style="font-size:11px;color:var(--cyan);width:18px;text-align:center">${expandIcon}</span>
           <b style="font-size:13px">${esc(ch.name)}</b>
-          <span class="dim" style="font-size:11px">P${ch.priority}/W${ch.weight || 1}</span>
+          <span class="dim" style="font-size:11px">${ch.tier ? `<span class="tier-badge tier-${ch.tier}">T${ch.tier}</span>` : ''}P${ch.priority}/W${ch.weight || 1}</span>
           ${stateTag}
           <span class="tag ${ratioColor}" style="padding:1px 6px;font-size:11px">${okCount}/${total}</span>
           <span style="flex:1"></span>
@@ -1503,7 +1531,7 @@ Pages.dashboard = {
         <span class="chan-status-dot ${dot}"></span>
         <div style="flex:1">
           <div>${esc(c.name)} <span class="dim" style="font-size:11px">${esc(c.preset)}</span>${probe}</div>
-          <div class="dim" style="font-size:11px">${(c.models || []).length} 个模型 · P${c.priority}/W${c.weight}${c.proxy_url ? ' · 代理' : ''}</div>
+          <div class="dim" style="font-size:11px">${(c.models || []).length} 个模型 · ${c.tier ? `<span class="tier-badge tier-${c.tier}">T${c.tier}</span> ` : ''}P${c.priority}/W${c.weight}${c.proxy_url ? ' · 代理' : ''}</div>
         </div>
         <span class="dim" style="font-size:12px">${state}</span></div>`;
     }).join('') : `<div class="empty-tip">暂无渠道</div>`;

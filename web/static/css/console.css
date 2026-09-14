@@ -80,6 +80,13 @@
 .chan-status-dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); animation: pulse 2s infinite; }
 .chan-status-dot.off { background: var(--text-dim); }
 .chan-status-dot.breaker { background: var(--red); box-shadow: 0 0 8px var(--red); animation: pulse 0.8s infinite; }
+.chan-status-dot.warn { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
 @keyframes pulse { 50% { opacity: 0.4; } }
 
 .proxy-badge { font-size: 11px; color: var(--purple); border: 1px dashed rgba(139, 92, 246, 0.5); border-radius: 4px; padding: 1px 6px; }
+
+/* 梯队徽章 */
+.tier-badge { font-size: 11px; font-weight: 600; border-radius: 4px; padding: 1px 6px; display: inline-block; }
+.tier-badge.tier-1 { color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); background: rgba(0, 229, 255, 0.08); }
+.tier-badge.tier-2 { color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.5); background: rgba(245, 158, 11, 0.08); }
+.tier-badge.tier-3 { color: #8b5cf6; border: 1px solid rgba(139, 92, 246, 0.5); background: rgba(139, 92, 246, 0.08); }

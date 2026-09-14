@@ -7,6 +7,7 @@ import config
 from gateway import balancer, events, pricing, stats, updater
 from gateway.auth import admin_required, default_settings
 from gateway.db import db
+from gateway.loginlock import check_locked, record_failure, record_success
 from gateway.models import Admin, ApiKey, Channel, ModelPrice, Preset, Setting, UsageLog
 from gateway.presets import PRESETS, preset_list, seed_presets
 from gateway.proxy import drop_channel
@@ -27,9 +28,27 @@ def list_adapters():
 @admin_bp.route("/login", methods=["POST"])
 def login():
     data = request.get_json(silent=True) or {}
+    ip = request.remote_addr or "unknown"
+
+    # 登录失败锁定检查
+    max_attempts = int(Setting.get("login_max_attempts", "5") or "5")
+    lockout_duration = int(Setting.get("login_lockout_duration", "300") or "300")
+    if max_attempts > 0:
+        locked, remaining = check_locked(ip, max_attempts, lockout_duration)
+        if locked:
+            return jsonify({"error": f"登录尝试次数过多,请 {remaining} 秒后重试"}), 429
+
     admin = Admin.query.first()
     if not admin or not admin.check_password(data.get("password") or ""):
+        # 记录失败
+        if max_attempts > 0:
+            triggered, lock_secs = record_failure(ip, max_attempts, lockout_duration)
+            if triggered:
+                return jsonify({"error": f"登录失败次数过多,已锁定 {lock_secs} 秒"}), 429
         return jsonify({"error": "密码错误"}), 401
+
+    # 登录成功,清除失败记录
+    record_success(ip)
     session["admin_id"] = admin.id
     session.permanent = True
     # 检测是否仍在使用默认密码,是则前端应强制跳转修改密码
@@ -178,7 +197,8 @@ def create_channel():
         adapter=data.get("adapter", "openai_compat"), base_url=data["base_url"].strip(),
         api_key=data.get("api_key", ""), models=data.get("models") or [],
         model_mapping=data.get("model_mapping") or {},
-        weight=int(data.get("weight", 1)), priority=int(data.get("priority", 0)),
+        weight=int(data.get("weight", 1)),
+        tier=int(data.get("tier", 0)),
         enabled=bool(data.get("enabled", True)), proxy_url=data.get("proxy_url", ""),
         pricing_override=data.get("pricing_override") or {},
         timeout=int(data.get("timeout", 0)), note=data.get("note", ""),
@@ -187,6 +207,11 @@ def create_channel():
         extra_headers=data.get("extra_headers") or {},
         custom_fields=data.get("custom_fields") or {},
         azure_api_version=data.get("azure_api_version", "2024-10-21"))
+    # 梯队优先级:设置了梯队且未显式指定 priority 时,自动映射
+    if ch.tier and "priority" not in data:
+        ch.priority = Channel.tier_priority(ch.tier)
+    else:
+        ch.priority = int(data.get("priority", 0))
     db.session.add(ch)
     db.session.commit()
     return jsonify(_channel_view(ch))
@@ -215,9 +240,12 @@ def update_channel(cid):
     for field in ("models", "model_mapping", "pricing_override"):
         if field in data:
             setattr(ch, field, data[field] or [])
-    for field, cast in (("weight", int), ("priority", int), ("timeout", int)):
+    for field, cast in (("weight", int), ("priority", int), ("timeout", int), ("tier", int)):
         if field in data:
             setattr(ch, field, cast(data[field] or 0))
+    # 梯队变更时自动同步 priority(仅未显式传 priority 时)
+    if "tier" in data and "priority" not in data:
+        ch.priority = Channel.tier_priority(ch.tier)
     if "enabled" in data:
         ch.enabled = bool(data["enabled"])
         if ch.enabled:  # 手动重新启用时清空熔断状态
@@ -291,6 +319,7 @@ def _channel_view(ch):
     state, cooldown = balancer.breaker_info(ch)
     d["breaker_state"] = state
     d["breaker_cooldown"] = int(cooldown)
+    d["tier_label"] = ch.tier_label
     return d
 
 
@@ -315,7 +344,8 @@ def model_status_api():
         state, _ = balancer.breaker_info(ch)
         chan_list.append({"id": ch.id, "name": ch.name, "enabled": ch.enabled,
                           "breaker": state, "models": ch.models or [],
-                          "priority": ch.priority or 0, "weight": ch.weight or 1})
+                          "priority": ch.priority or 0, "weight": ch.weight or 1,
+                          "tier": ch.tier or 0, "tier_label": ch.tier_label})
         for m in (ch.models or []):
             entry = {"channel_id": ch.id, "channel_name": ch.name,
                      "enabled": ch.enabled, "breaker": state}
@@ -614,6 +644,12 @@ def fetch_models():
     if not ok:
         return jsonify({"ok": False, "error": err or "获取模型失败"}), 200
 
+    # 模糊搜索过滤
+    query = (data.get("filter") or "").strip().lower()
+    total_count = len(models)
+    if query:
+        models = [m for m in models if query in m.lower()]
+
     # 合并元数据:上游返回优先,内置知识库兜底
     from gateway.model_meta import lookup
     result = []
@@ -634,7 +670,8 @@ def fetch_models():
             "source": src,
         })
     return jsonify({"ok": True, "latency_ms": latency, "models": result,
-                    "list_source": source, "warning": warning})
+                    "list_source": source, "warning": warning,
+                    "total_count": total_count, "filtered_count": len(result)})
 
 
 # ---------- 热点统计 ----------
@@ -766,6 +803,10 @@ def get_settings():
                      "log_bodies", "log_body_max", "log_retention_days",
                      "cache_enabled", "cache_stream", "cache_ttl",
                      "cache_max_memory", "cache_max_sqlite",
+                     "rate_limit_rpm", "rate_limit_rph",
+                     "login_max_attempts", "login_lockout_duration",
+                     "webhook_enabled", "webhook_url",
+                     "webhook_on_channel_fail", "webhook_on_quota_alert",
                      "update_enabled", "update_repo", "update_repo_fallback",
                      "update_branch", "update_mode", "update_check_interval", "update_auto_restart")})
 
@@ -776,7 +817,9 @@ def set_settings():
     data = request.get_json(silent=True) or {}
     for k in ("default_timeout", "max_retry", "breaker_threshold",
               "breaker_cooldown", "probe_interval", "auto_timeout", "auto_max_models",
-              "log_bodies", "log_body_max", "log_retention_days"):
+              "log_bodies", "log_body_max", "log_retention_days",
+              "rate_limit_rpm", "rate_limit_rph",
+              "login_max_attempts", "login_lockout_duration"):
         if k in data:
             try:
                 int(data[k])
@@ -789,6 +832,15 @@ def set_settings():
     for ck in ("cache_enabled", "cache_stream", "cache_ttl", "cache_max_memory", "cache_max_sqlite"):
         if ck in data:
             Setting.set(ck, str(data[ck]))
+    # Webhook 设置
+    if "webhook_enabled" in data:
+        Setting.set("webhook_enabled", "1" if str(data["webhook_enabled"]) == "1" else "0")
+    if "webhook_url" in data:
+        Setting.set("webhook_url", (data["webhook_url"] or "").strip())
+    if "webhook_on_channel_fail" in data:
+        Setting.set("webhook_on_channel_fail", "1" if str(data["webhook_on_channel_fail"]) == "1" else "0")
+    if "webhook_on_quota_alert" in data:
+        Setting.set("webhook_on_quota_alert", "1" if str(data["webhook_on_quota_alert"]) == "1" else "0")
     # 版本更新设置
     if "update_enabled" in data:
         Setting.set("update_enabled", "1" if str(data["update_enabled"]) == "1" else "0")
@@ -918,3 +970,193 @@ def update_apply():
                      daemon=True, name="update-apply").start()
     return jsonify({"ok": True, "started": True,
                     "message": "更新已开始,稍后自动刷新查看结果"})
+
+
+# ---------- 配置导入/导出 ----------
+@admin_bp.route("/config/export", methods=["GET"])
+@admin_required
+def config_export():
+    """导出全部配置(JSON):渠道/Key/预设/设置/模型单价"""
+    channels = [c.to_dict() for c in Channel.query.all()]
+    keys = [k.to_dict(mask=False) for k in ApiKey.query.all()]
+    presets = [p.to_dict() for p in Preset.query.all()]
+    prices = [{"model": p.model, "input_price": p.input_price,
+               "output_price": p.output_price, "currency": p.currency,
+               "context_window": p.context_window, "max_output": p.max_output}
+              for p in ModelPrice.query.order_by(ModelPrice.model).all()]
+    settings = {}
+    for k in ("default_timeout", "max_retry", "breaker_threshold", "breaker_cooldown",
+              "probe_interval", "auto_models", "auto_timeout", "auto_max_models",
+              "log_bodies", "log_body_max", "log_retention_days",
+              "cache_enabled", "cache_stream", "cache_ttl",
+              "cache_max_memory", "cache_max_sqlite",
+              "rate_limit_rpm", "rate_limit_rph",
+              "login_max_attempts", "login_lockout_duration",
+              "webhook_enabled", "webhook_url",
+              "webhook_on_channel_fail", "webhook_on_quota_alert"):
+        settings[k] = Setting.get(k)
+    return jsonify({
+        "version": 1,
+        "exported_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+        "channels": channels, "api_keys": keys, "presets": presets,
+        "model_prices": prices, "settings": settings,
+    })
+
+
+@admin_bp.route("/config/import", methods=["POST"])
+@admin_required
+def config_import():
+    """导入配置(JSON)。mode=merge 合并(默认),mode=replace 清空后导入"""
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "无效的配置格式"}), 400
+    mode = data.get("mode", "merge")
+    if mode not in ("merge", "replace"):
+        return jsonify({"error": "mode 仅支持 merge / replace"}), 400
+
+    stats = {"channels": 0, "api_keys": 0, "presets": 0, "model_prices": 0, "settings": 0}
+
+    if mode == "replace":
+        # 清空现有配置(保留内置预设)
+        Channel.query.delete(synchronize_session=False)
+        ApiKey.query.delete(synchronize_session=False)
+        ModelPrice.query.delete(synchronize_session=False)
+        # 内置预设保留,用户自定义预设清除
+        Preset.query.filter_by(is_built_in=False).delete(synchronize_session=False)
+        db.session.commit()
+
+    # 导入设置
+    for k, v in (data.get("settings") or {}).items():
+        if v is not None:
+            Setting.set(k, str(v))
+            stats["settings"] += 1
+
+    # 导入模型单价
+    for p in (data.get("model_prices") or []):
+        if p.get("model"):
+            from gateway import pricing
+            pricing.upsert_price(
+                p["model"],
+                input_price=p.get("input_price"),
+                output_price=p.get("output_price"),
+                currency=p.get("currency"),
+                context_window=p.get("context_window"),
+                max_output=p.get("max_output"))
+            stats["model_prices"] += 1
+
+    # 导入渠道
+    for c in (data.get("channels") or []):
+        if c.get("name") and c.get("base_url"):
+            if db.session.get(Channel, c.get("id")):
+                continue
+            ch = Channel(
+                name=c["name"], preset=c.get("preset", "custom"),
+                adapter=c.get("adapter", "openai_compat"),
+                base_url=c["base_url"],
+                api_key=c.get("api_key", ""),
+                models=c.get("models") or [],
+                model_mapping=c.get("model_mapping") or {},
+                weight=c.get("weight", 1),
+                priority=c.get("priority", 0),
+                tier=c.get("tier", 0),
+                enabled=c.get("enabled", True),
+                proxy_url=c.get("proxy_url", ""),
+                pricing_override=c.get("pricing_override") or {},
+                timeout=c.get("timeout", 0), note=c.get("note", ""),
+                probe_mode=c.get("probe_mode", "models"),
+                user_agent=c.get("user_agent", ""),
+                extra_headers=c.get("extra_headers") or {},
+                custom_fields=c.get("custom_fields") or {},
+                azure_api_version=c.get("azure_api_version", "2024-10-21"))
+            db.session.add(ch)
+            stats["channels"] += 1
+
+    # 导入 API Key
+    for k in (data.get("api_keys") or []):
+        if k.get("key"):
+            if db.session.get(ApiKey, k.get("id")):
+                db.session.merge(ApiKey(
+                    id=k["id"], name=k.get("name", ""), key=k["key"],
+                    quota_tokens=k.get("quota_tokens", -1),
+                    used_tokens=k.get("used_tokens", 0),
+                    allowed_models=k.get("allowed_models") or [],
+                    enabled=k.get("enabled", True)))
+            else:
+                db.session.add(ApiKey(
+                    name=k.get("name", ""), key=k["key"],
+                    quota_tokens=k.get("quota_tokens", -1),
+                    allowed_models=k.get("allowed_models") or [],
+                    enabled=k.get("enabled", True)))
+            stats["api_keys"] += 1
+
+    # 导入预设(仅非内置)
+    for p in (data.get("presets") or []):
+        if p.get("id") and not db.session.get(Preset, p.get("id")):
+            db.session.add(Preset(
+                id=p["id"], name=p.get("name", p["id"]),
+                adapter=p.get("adapter", "openai_compat"),
+                base_url=p.get("base_url", ""),
+                models=p.get("models") or [],
+                prices=p.get("prices") or {},
+                probe_mode=p.get("probe_mode", "models"),
+                user_agent=p.get("user_agent", ""),
+                needs_proxy=p.get("needs_proxy", False),
+                local=p.get("local", False),
+                note=p.get("note", ""),
+                is_built_in=p.get("is_built_in", False),
+                sort_order=p.get("sort_order", 0)))
+            stats["presets"] += 1
+
+    db.session.commit()
+    return jsonify({"ok": True, "stats": stats})
+
+
+# ---------- Webhook 测试 ----------
+@admin_bp.route("/webhook/test", methods=["POST"])
+@admin_required
+def webhook_test():
+    """发送一条测试 webhook"""
+    from gateway import webhook
+    settings = webhook.get_settings()
+    if not settings["url"]:
+        return jsonify({"error": "未配置 Webhook URL"}), 400
+    webhook._send_webhook(settings["url"], {
+        "event": "test",
+        "time": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+        "message": "AIGateway Webhook 测试通知",
+    })
+    return jsonify({"ok": True, "message": "测试通知已发送"})
+
+
+# ---------- 健康检查 ----------
+@admin_bp.route("/health", methods=["GET"])
+def health_check():
+    """健康检查端点(供监控/负载均衡使用,无需认证)"""
+    from gateway import logqueue
+    channels_total = Channel.query.count()
+    channels_enabled = Channel.query.filter_by(enabled=True).count()
+    # 统计熔断中的渠道
+    breaker_open = 0
+    for ch in Channel.query.filter_by(enabled=True).all():
+        state, _ = balancer.breaker_info(ch)
+        if state == "open":
+            breaker_open += 1
+
+    return jsonify({
+        "status": "ok",
+        "channels": {
+            "total": channels_total,
+            "enabled": channels_enabled,
+            "breaker_open": breaker_open,
+        },
+        "tiers": balancer.tier_stats(),
+        "log_queue": logqueue.queue_size(),
+    })
+
+
+# ---------- 梯队统计 ----------
+@admin_bp.route("/tiers/stats", methods=["GET"])
+@admin_required
+def tier_stats_api():
+    """返回各梯队统计"""
+    return jsonify(balancer.tier_stats())

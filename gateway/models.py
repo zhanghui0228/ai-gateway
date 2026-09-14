@@ -86,6 +86,7 @@ class Channel(db.Model):
     model_mapping = db.Column(JSONText, default=dict)         # 对外名 -> 上游实际名 {"gpt-4o":"x"}
     weight = db.Column(db.Integer, default=1)                 # 同优先级内权重
     priority = db.Column(db.Integer, default=0)               # 数值越大优先级越高
+    tier = db.Column(db.Integer, default=0)                   # 梯队: 1=主渠道,2=备用,3=兜底,0=未分类
     enabled = db.Column(db.Boolean, default=True)
     # 每渠道独立代理
     proxy_url = db.Column(db.String(512), default="")         # http://user:pass@host:port 或 socks5://...
@@ -128,6 +129,15 @@ class Channel(db.Model):
         # 简单轮询:按失败次数取模,保证故障转移时换 key
         return keys[self.fail_streak % len(keys)]
 
+    @property
+    def tier_label(self):
+        return {1: "第一梯队", 2: "第二梯队", 3: "第三梯队"}.get(self.tier, "未分类")
+
+    @staticmethod
+    def tier_priority(tier):
+        """梯队默认优先级映射: 第一梯队=100, 第二梯队=50, 第三梯队=10"""
+        return {1: 100, 2: 50, 3: 10}.get(tier or 0, 0)
+
     def to_dict(self, mask_key=True):
         d = {
             "id": self.id, "name": self.name, "preset": self.preset,
@@ -135,6 +145,7 @@ class Channel(db.Model):
             "api_key": self.api_key, "models": self.models or [],
             "model_mapping": self.model_mapping or {},
             "weight": self.weight, "priority": self.priority,
+            "tier": self.tier or 0,
             "enabled": self.enabled, "proxy_url": self.proxy_url,
             "fail_streak": self.fail_streak, "breaker_until": self.breaker_until,
             "pricing_override": self.pricing_override or {},

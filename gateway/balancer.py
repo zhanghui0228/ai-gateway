@@ -64,6 +64,12 @@ def record_failure(channel, threshold, cooldown):
         _db_update(channel, fail_streak=channel.fail_streak, breaker_until=until)
         with _lock:
             _state.pop(channel.id, None)
+        # 熔断打开时发送 webhook 通知
+        try:
+            from . import webhook
+            webhook.notify_channel_fail(channel.name, f"连续失败 {channel.fail_streak} 次,熔断 {cooldown}s")
+        except Exception:
+            pass
     else:
         _db_update(channel, fail_streak=channel.fail_streak)
 
@@ -145,3 +151,27 @@ def note_failure(channel):
 
 def note_success(channel):
     record_success(channel)
+
+
+def tier_stats():
+    """返回各梯队的渠道统计:{tier: {total, enabled, breaker_open}}"""
+    stats = {0: {"total": 0, "enabled": 0, "breaker_open": 0},
+             1: {"total": 0, "enabled": 0, "breaker_open": 0},
+             2: {"total": 0, "enabled": 0, "breaker_open": 0},
+             3: {"total": 0, "enabled": 0, "breaker_open": 0}}
+    for ch in Channel.query.all():
+        t = ch.tier or 0
+        if t not in stats:
+            t = 0
+        stats[t]["total"] += 1
+        if ch.enabled:
+            stats[t]["enabled"] += 1
+        state, _ = breaker_info(ch)
+        if state == CircuitState.OPEN and ch.enabled:
+            stats[t]["breaker_open"] += 1
+    return stats
+
+
+def channel_tier(channel):
+    """获取渠道梯队(0=未分类)"""
+    return channel.tier or 0

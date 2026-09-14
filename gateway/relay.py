@@ -114,13 +114,14 @@ def write_call_log(request_id, key_row, channel, kind, model_requested, model_ac
                    status_code, success, latency_ms, retries, pt, ct, cache_read, cost,
                    is_stream, client_ip, user_agent, request_body, response_body, error="",
                    cache_hit=False):
-    """写入调用日志(尊重"记录内容"设置)"""
+    """写入调用日志(异步队列批量落库)"""
     if not _log_bodies_enabled():
         request_body = response_body = ""
     elif request_body is not None:
         request_body = _truncate(request_body)
         response_body = _truncate(response_body)
-    entry = CallLog(
+    record = dict(
+        _log_type="call",
         request_id=request_id,
         key_id=key_row.id if key_row else None,
         key_name=(key_row.name or key_row.key[:8]) if key_row else "",
@@ -135,9 +136,9 @@ def write_call_log(request_id, key_row, channel, kind, model_requested, model_ac
         client_ip=client_ip, user_agent=user_agent,
         request_body=request_body or "", response_body=response_body or "",
         error=(error or "")[:500])
-    db.session.add(entry)
-    db.session.commit()
-    return entry
+    from . import logqueue
+    logqueue.enqueue(record)
+    return record
 
 
 def cleanup_call_logs():
@@ -298,7 +299,7 @@ def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_ti
            "request_body": request_body_text, "model_requested": model,
            "is_stream": stream}
 
-    # ---------- 响应缓存查找(流式 + 非流式) ----------
+    # ---------- 响应缓存准备(延迟到渠道选择后检查) ----------
     cache_key = None
     if cache_mod.should_cache(kind, openai_body) and cache_mod.cache_enabled():
         # 允许客户端通过请求头强制跳过缓存
@@ -309,11 +310,6 @@ def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_ti
             bypass = False
         if not bypass:
             cache_key = cache_mod.build_cache_key(kind, model, openai_body)
-            cached = cache_mod.cache.get(cache_key)
-            if cached:
-                if stream:
-                    return _serve_cached_stream(cached, ctx, model, kind, started, cache_key, api_key_row)
-                return _serve_cached(cached, ctx, model, kind, started, cache_key, api_key_row)
 
     candidates = balancer.pick_candidates(model, exclude_ids=set())
     if not candidates:
@@ -329,10 +325,30 @@ def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_ti
         raise RelayError(f"没有可用渠道支持模型 {model}", 404)
 
     last_channel = None
+    prev_tier = None
+    _tier_labels = {0: "未分类", 1: "第一梯队", 2: "第二梯队", 3: "第三梯队"}
     for attempt, channel in enumerate(candidates):
         if attempt >= max_retry:
             break
         last_channel = channel
+
+        # 跨梯队降级日志
+        cur_tier = balancer.channel_tier(channel)
+        if prev_tier is not None and cur_tier != prev_tier and prev_tier > 0:
+            app.logger.warning("跨梯队降级: %s -> %s (第%d次尝试, 模型=%s)",
+                               _tier_labels.get(prev_tier, f"T{prev_tier}"),
+                               channel.tier_label, attempt, model)
+        prev_tier = cur_tier
+
+        # ---------- 渠道级缓存检查(不同渠道独立缓存) ----------
+        if cache_key:
+            channel_cache_key = f"{cache_key}:{channel.id}"
+            cached = cache_mod.cache.get(channel_cache_key)
+            if cached:
+                if stream:
+                    return _serve_cached_stream(cached, ctx, model, kind, started, channel_cache_key, api_key_row)
+                return _serve_cached(cached, ctx, model, kind, started, channel_cache_key, api_key_row)
+
         adapter = get_adapter(channel.adapter)
         upstream_model = channel.real_model(model)
         timeout = _get_timeout(channel)
@@ -405,10 +421,11 @@ def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_ti
                         cache_read=cache.get("cache_read", 0),
                         cache_creation=cache.get("cache_creation", 0),
                         kind=kind, ctx=ctx, response_text=resp_text)
-        # 写入响应缓存(非流式 + 支持缓存的 kind)
+        # 写入响应缓存(非流式 + 支持缓存的 kind,按渠道隔离)
         if cache_key:
+            channel_cache_key = f"{cache_key}:{channel.id}"
             cache_mod.cache.put(
-                cache_key=cache_key, kind=kind, model=model,
+                cache_key=channel_cache_key, kind=kind, model=model,
                 response_body=resp_text, prompt_tokens=pt, completion_tokens=ct)
         return Response(resp_text, status=200, content_type="application/json",
                         headers={"X-Request-Id": request_id})
@@ -511,10 +528,11 @@ def _do_stream(app, api_key_row, channel, adapter, client, req,
                                         cache_creation=usage.get("cache_creation", 0),
                                         kind=kind, ctx=ctx,
                                         response_text="".join(collected_text))
-                        # 流式写入缓存(仅在流完整结束时写入,避免缓存截断响应)
+                        # 流式写入缓存(仅在流完整结束时写入,避免缓存截断响应,按渠道隔离)
                         if cache_key and collected_chunks:
+                            channel_cache_key = f"{cache_key}:{channel.id}"
                             cache_mod.cache.put_stream(
-                                cache_key=cache_key, kind=kind, model=model,
+                                cache_key=channel_cache_key, kind=kind, model=model,
                                 chunks=collected_chunks,
                                 prompt_tokens=pt, completion_tokens=ct)
                     else:
