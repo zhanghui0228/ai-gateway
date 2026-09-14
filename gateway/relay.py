@@ -243,6 +243,41 @@ def _serve_cached(cached, ctx, model, kind, started, cache_key, api_key_row):
                     headers={"X-Cache": "HIT", "X-Request-Id": ctx.get("request_id", "")})
 
 
+def _serve_cached_stream(cached, ctx, model, kind, started, cache_key, api_key_row):
+    """构造流式缓存命中响应: 逐个 yield 缓存的 SSE chunks,记录日志(cost=0)"""
+    latency_ms = int((time.time() - started) * 1000)
+    # 记录 CallLog(标记 cache_hit=True, cost=0, is_stream=True)
+    _finish_success(
+        api_key_row=api_key_row, channel=None, model=model,
+        pt=cached.prompt_tokens, ct=cached.completion_tokens,
+        total=cached.prompt_tokens + cached.completion_tokens,
+        cost=0.0, latency_ms=latency_ms, is_stream=True,
+        estimated=False, attempt=0,
+        cache_read=0, cache_creation=0,
+        kind=kind, ctx=ctx, response_text="",
+        cache_hit=True)
+    # 记录 CacheEvent(用于趋势图和最近记录)
+    try:
+        from . import pricing
+        saved = pricing.calc_cost(model, cached.prompt_tokens, cached.completion_tokens, None)
+    except Exception:
+        saved = 0.0
+    cache_mod.cache.record_hit_event(
+        cache_key=cache_key, model=model, kind=kind,
+        prompt_tokens=cached.prompt_tokens, completion_tokens=cached.completion_tokens,
+        saved_cost=saved)
+
+    def generate():
+        for chunk in cached.chunks:
+            yield f"data: {chunk}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return Response(generate(), status=200,
+                    content_type="text/event-stream; charset=utf-8",
+                    headers={"X-Cache": "HIT", "X-Request-Id": ctx.get("request_id", ""),
+                             "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_timeout=None):
     stream = bool(openai_body.get("stream"))
     max_retry = quota.get_setting_int("max_retry", 3)
@@ -261,9 +296,9 @@ def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_ti
            "request_body": request_body_text, "model_requested": model,
            "is_stream": stream}
 
-    # ---------- 响应缓存查找(仅非流式) ----------
+    # ---------- 响应缓存查找(流式 + 非流式) ----------
     cache_key = None
-    if not stream and cache_mod.should_cache(kind, openai_body) and cache_mod.cache_enabled():
+    if cache_mod.should_cache(kind, openai_body) and cache_mod.cache_enabled():
         # 允许客户端通过请求头强制跳过缓存
         try:
             from flask import has_request_context, request as _req
@@ -274,6 +309,8 @@ def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_ti
             cache_key = cache_mod.build_cache_key(kind, model, openai_body)
             cached = cache_mod.cache.get(cache_key)
             if cached:
+                if stream:
+                    return _serve_cached_stream(cached, ctx, model, kind, started, cache_key, api_key_row)
                 return _serve_cached(cached, ctx, model, kind, started, cache_key, api_key_row)
 
     candidates = balancer.pick_candidates(model, exclude_ids=set())
@@ -313,7 +350,8 @@ def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_ti
         try:
             if req.stream:
                 return _do_stream(app, api_key_row, channel, adapter, client, req,
-                                  model, kind, request_text, attempt, started, ctx)
+                                  model, kind, request_text, attempt, started, ctx,
+                                  cache_key=cache_key)
             resp = client.post(req.url, headers=req.headers, json=req.json_body,
                                timeout=timeout)
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout,
@@ -390,7 +428,7 @@ def _sse_data_lines(resp):
 
 
 def _do_stream(app, api_key_row, channel, adapter, client, req,
-               model, kind, request_text, attempt, started, ctx=None):
+               model, kind, request_text, attempt, started, ctx=None, cache_key=None):
     timeout = _get_timeout(channel)
     ctx = ctx or {}
 
@@ -423,6 +461,7 @@ def _do_stream(app, api_key_row, channel, adapter, client, req,
 
     def generate():
         collected_text = []
+        collected_chunks = []  # 收集所有 SSE data 用于缓存
         usage = {}
         status_code, error_msg = 200, ""
         with real_app.app_context():
@@ -432,6 +471,7 @@ def _do_stream(app, api_key_row, channel, adapter, client, req,
                         usage = item[1]
                         continue
                     data = item
+                    collected_chunks.append(data)
                     # 顺带收集文本用于估算兜底
                     try:
                         j = json.loads(data)
@@ -462,6 +502,12 @@ def _do_stream(app, api_key_row, channel, adapter, client, req,
                                     cache_creation=usage.get("cache_creation", 0),
                                     kind=kind, ctx=ctx,
                                     response_text="".join(collected_text))
+                    # 流式写入缓存(成功且有 cache_key)
+                    if cache_key and collected_chunks:
+                        cache_mod.cache.put_stream(
+                            cache_key=cache_key, kind=kind, model=model,
+                            chunks=collected_chunks,
+                            prompt_tokens=pt, completion_tokens=ct)
                 else:
                     _log_failure(api_key_row, channel, model, status_code, error_msg,
                                  attempt, started, request_text, kind=kind, ctx=ctx,

@@ -24,6 +24,7 @@ def _migrate_columns(app):
             "model_prices": [("context_window", "INTEGER"), ("max_output", "INTEGER")],
             "usage_logs": [("cache_read_tokens", "BIGINT"), ("cache_creation_tokens", "BIGINT")],
             "call_logs": [("cache_hit", "BOOLEAN")],
+            "response_cache": [("chunks", "TEXT")],
         }
         with db.engine.begin() as conn:
             for table, adds in migrations.items():

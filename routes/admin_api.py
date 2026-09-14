@@ -761,7 +761,7 @@ def get_settings():
                      "breaker_cooldown", "probe_interval", "auto_models",
                      "auto_timeout", "auto_max_models",
                      "log_bodies", "log_body_max", "log_retention_days",
-                     "cache_enabled", "cache_ttl",
+                     "cache_enabled", "cache_stream", "cache_ttl",
                      "cache_max_memory", "cache_max_sqlite")})
 
 
@@ -781,7 +781,7 @@ def set_settings():
     if "auto_models" in data:
         Setting.set("auto_models", data["auto_models"] or "")
     # 缓存设置
-    for ck in ("cache_enabled", "cache_ttl", "cache_max_memory", "cache_max_sqlite"):
+    for ck in ("cache_enabled", "cache_stream", "cache_ttl", "cache_max_memory", "cache_max_sqlite"):
         if ck in data:
             Setting.set(ck, str(data[ck]))
     return jsonify({"ok": True})
@@ -835,7 +835,7 @@ def cache_clear():
 @admin_required
 def cache_get_config():
     """查看缓存配置"""
-    keys = ("cache_enabled", "cache_ttl", "cache_max_memory", "cache_max_sqlite")
+    keys = ("cache_enabled", "cache_stream", "cache_ttl", "cache_max_memory", "cache_max_sqlite")
     return jsonify({k: Setting.get(k) for k in keys})
 
 
@@ -845,7 +845,7 @@ def cache_set_config():
     """更新缓存配置"""
     from flask import request as _rq
     data = _rq.get_json(silent=True) or {}
-    for ck in ("cache_enabled", "cache_ttl", "cache_max_memory", "cache_max_sqlite"):
+    for ck in ("cache_enabled", "cache_stream", "cache_ttl", "cache_max_memory", "cache_max_sqlite"):
         if ck in data:
             Setting.set(ck, str(data[ck]))
     return jsonify({"ok": True})

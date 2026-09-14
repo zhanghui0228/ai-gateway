@@ -17,7 +17,8 @@ _CACHE_KEY_FIELDS = (
     "seed", "stop", "n",
     "frequency_penalty", "presence_penalty",
     "logit_bias", "logprobs", "top_logprobs",
-    "input",  # embeddings
+    "input",   # embeddings
+    "stream",  # 区分流式/非流式,确保缓存键不同
 )
 
 # 每种 kind 的默认 TTL(秒)
@@ -29,11 +30,14 @@ def _now():
 
 
 def should_cache(kind, body):
-    """判断请求是否可缓存: 非流式 + 支持的 kind"""
+    """判断请求是否可缓存: 支持的 kind（流式由 cache_stream 设置控制）"""
     if kind not in _KIND_TTL:
         return False
     if bool(body.get("stream")):
-        return False
+        try:
+            return Setting.get("cache_stream", "1") != "0"
+        except Exception:
+            return True
     return True
 
 
@@ -81,17 +85,22 @@ def cache_enabled():
 
 class _CacheEntry:
     """内存中的缓存条目"""
-    __slots__ = ("response_body", "prompt_tokens", "completion_tokens",
+    __slots__ = ("response_body", "chunks", "prompt_tokens", "completion_tokens",
                  "model", "kind", "expires_at")
 
-    def __init__(self, response_body, prompt_tokens, completion_tokens,
+    def __init__(self, response_body, chunks, prompt_tokens, completion_tokens,
                  model, kind, expires_at):
-        self.response_body = response_body
+        self.response_body = response_body  # 非流式: JSON 字符串
+        self.chunks = chunks                # 流式: SSE data 字符串列表
         self.prompt_tokens = prompt_tokens
         self.completion_tokens = completion_tokens
         self.model = model
         self.kind = kind
         self.expires_at = expires_at
+
+    @property
+    def is_stream(self):
+        return self.chunks is not None
 
 
 class ResponseCache:
@@ -126,8 +135,9 @@ class ResponseCache:
         row = db.session.get(ResponseCacheEntry, cache_key)
         if row and row.expires_at and row.expires_at.replace(tzinfo=timezone.utc) > _now():
             # 加载到内存 LRU
+            chunks = json.loads(row.chunks) if row.chunks else None
             entry = _CacheEntry(
-                response_body=row.response_body,
+                response_body=row.response_body, chunks=chunks,
                 prompt_tokens=row.prompt_tokens,
                 completion_tokens=row.completion_tokens,
                 model=row.model, kind=row.kind, expires_at=row.expires_at)
@@ -159,12 +169,12 @@ class ResponseCache:
 
     def put(self, cache_key: str, kind: str, model: str,
             response_body: str, prompt_tokens: int, completion_tokens: int):
-        """写入缓存: 内存 LRU + SQLite"""
+        """写入非流式缓存: 内存 LRU + SQLite"""
         ttl = _get_ttl(kind)
         expires_at = _now() + timedelta(seconds=ttl)
 
         entry = _CacheEntry(
-            response_body=response_body,
+            response_body=response_body, chunks=None,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             model=model, kind=kind, expires_at=expires_at)
@@ -178,6 +188,7 @@ class ResponseCache:
             row = db.session.get(ResponseCacheEntry, cache_key)
             if row:
                 row.response_body = response_body
+                row.chunks = None
                 row.prompt_tokens = prompt_tokens
                 row.completion_tokens = completion_tokens
                 row.expires_at = expires_at
@@ -186,7 +197,46 @@ class ResponseCache:
             else:
                 row = ResponseCacheEntry(
                     cache_key=cache_key, kind=kind, model=model,
-                    response_body=response_body,
+                    response_body=response_body, chunks=None,
+                    prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+                    expires_at=expires_at, hit_count=0)
+                db.session.add(row)
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
+    def put_stream(self, cache_key: str, kind: str, model: str,
+                   chunks: list, prompt_tokens: int, completion_tokens: int):
+        """写入流式缓存: 内存 LRU + SQLite（存储 SSE chunks 数组）"""
+        ttl = _get_ttl(kind)
+        expires_at = _now() + timedelta(seconds=ttl)
+
+        entry = _CacheEntry(
+            response_body=None, chunks=chunks,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            model=model, kind=kind, expires_at=expires_at)
+
+        with self._lock:
+            self._lru[cache_key] = entry
+            self._evict_if_needed()
+
+        # 写 SQLite(持久化,chunks 存为 JSON)
+        try:
+            chunks_json = json.dumps(chunks, ensure_ascii=False)
+            row = db.session.get(ResponseCacheEntry, cache_key)
+            if row:
+                row.response_body = ""
+                row.chunks = chunks_json
+                row.prompt_tokens = prompt_tokens
+                row.completion_tokens = completion_tokens
+                row.expires_at = expires_at
+                row.hit_count = 0
+                row.last_hit_at = None
+            else:
+                row = ResponseCacheEntry(
+                    cache_key=cache_key, kind=kind, model=model,
+                    response_body="", chunks=chunks_json,
                     prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
                     expires_at=expires_at, hit_count=0)
                 db.session.add(row)
@@ -262,8 +312,9 @@ class ResponseCache:
                 .all())
         with self._lock:
             for row in rows:
+                chunks = json.loads(row.chunks) if row.chunks else None
                 self._lru[row.cache_key] = _CacheEntry(
-                    response_body=row.response_body,
+                    response_body=row.response_body, chunks=chunks,
                     prompt_tokens=row.prompt_tokens,
                     completion_tokens=row.completion_tokens,
                     model=row.model, kind=row.kind, expires_at=row.expires_at)
@@ -319,10 +370,14 @@ class ResponseCache:
             if entry and entry.expires_at:
                 remaining = (entry.expires_at.replace(tzinfo=timezone.utc) - now).total_seconds()
                 ttl_left = max(0, int(remaining))
+            # 判断是否为流式缓存
+            entry_row = db.session.get(ResponseCacheEntry, r.cache_key)
+            is_stream = entry_row and entry_row.chunks is not None
             result.append({
                 "id": r.id,
                 "created_at": r.created_at.isoformat() if r.created_at else "",
                 "model": r.model, "kind": r.kind,
+                "is_stream": is_stream,
                 "prompt_tokens": r.prompt_tokens,
                 "completion_tokens": r.completion_tokens,
                 "saved_cost": r.saved_cost,
