@@ -10,9 +10,17 @@ from gateway.db import db
 from gateway.models import Admin, ApiKey, Channel, ModelPrice, Preset, Setting, UsageLog
 from gateway.presets import PRESETS, preset_list, seed_presets
 from gateway.proxy import drop_channel
-from gateway.adapters.registry import get_adapter
+from gateway.adapters.registry import get_adapter, adapter_list, adapter_label
 
 admin_bp = Blueprint("admin", __name__, url_prefix="/admin/api")
+
+
+# ---------- 适配器 ----------
+@admin_bp.route("/adapters", methods=["GET"])
+@admin_required
+def list_adapters():
+    """返回适配器列表(供前端动态渲染下拉框)"""
+    return jsonify(adapter_list())
 
 
 # ---------- 登录 ----------
@@ -385,6 +393,16 @@ def update_key(kid):
             key.expires_at = None
     db.session.commit()
     return jsonify(key.to_dict())
+
+
+@admin_bp.route("/keys/<int:kid>", methods=["GET"])
+@admin_required
+def get_key_detail(kid):
+    """获取 API Key 详情(含完整未脱敏 key,供复制使用)"""
+    key = db.session.get(ApiKey, kid)
+    if not key:
+        return jsonify({"error": "Key 不存在"}), 404
+    return jsonify(key.to_dict(mask=False))
 
 
 @admin_bp.route("/keys/<int:kid>", methods=["DELETE"])

@@ -1,8 +1,19 @@
 /* 各管理页渲染逻辑 */
 const Pages = {};
 let CHARTS = [];
+let _ADAPTERS = [];   // [{name, label, description}]
+let _adapterLabels = {};  // {name: label}
 function disposeCharts() { CHARTS.forEach(c => c.dispose()); CHARTS = []; }
 function mkChart(el) { const c = echarts.init(el); CHARTS.push(c); return c; }
+async function loadAdapters() {
+  if (_ADAPTERS.length) return _ADAPTERS;
+  try {
+    _ADAPTERS = await api('/admin/api/adapters');
+    _adapterLabels = {};
+    _ADAPTERS.forEach(a => { _adapterLabels[a.name] = a.label; });
+  } catch (e) { /* ignore */ }
+  return _ADAPTERS;
+}
 
 /* ================= 渠道管理 ================= */
 function _modelCells(c) {
@@ -66,7 +77,7 @@ Pages.channels = {
         <td>${probeCell}${probeAt}</td>
         <td><b>${esc(c.name)}</b>${c.note ? `<div class="dim" style="font-size:11px">${esc(c.note)}</div>` : ''}</td>
         <td><span class="tag info">${esc(c.preset)}</span></td>
-        <td class="mono" style="font-size:12px">${esc(c.adapter)}</td>
+        <td style="font-size:12px">${esc(_adapterLabels[c.adapter] || c.adapter)}</td>
         <td style="max-width:220px">${_modelCells(c)}</td>
         <td class="mono">P${c.priority} / W${c.weight}</td>
         <td>${c.proxy_url ? '<span class="proxy-badge">proxy</span>' : '<span class="dim">-</span>'}</td>
@@ -97,6 +108,7 @@ Pages.channels = {
   async edit(row) {
     let presets = [];
     try { presets = await api('/admin/api/presets'); } catch (e) {}
+    await loadAdapters();
     const isEdit = !!(row && row.id);
     // 注意:不要用 c 覆盖入参(reassign 后再用 c.id 会导致取到列表数组,字段全部回落默认值)
     let c = row;
@@ -122,8 +134,9 @@ Pages.channels = {
       <div class="form-row">
         <div class="field" style="flex:2"><label>Base URL *</label><input id="f-base" value="${esc(p.base_url)}" placeholder="https://api.deepseek.com"></div>
         <div class="field"><label>适配器</label>
-          <select id="f-adapter">${['openai_compat','anthropic','gemini','azure'].map(a =>
-            `<option ${a === p.adapter ? 'selected' : ''}>${a}</option>`).join('')}</select></div>
+          <select id="f-adapter">${(_ADAPTERS || []).map(a =>
+            `<option value="${a.name}" ${a.name === p.adapter ? 'selected' : ''}>${esc(a.label)}</option>`).join('')}</select>
+          <div class="hint" id="f-adapter-hint" style="margin-top:4px">${esc((_ADAPTERS || []).find(x => x.name === p.adapter)?.description || '')}</div></div>
       </div>
       <div class="field"><label>API Key(多个用英文逗号分隔,自动轮询)</label>
         <div style="display:flex;gap:8px;align-items:center">
@@ -217,6 +230,11 @@ Pages.channels = {
     };
     $('#f-preset').onchange = applyPreset;
     applyPreset();  // 初始渲染(编辑态也要显示自定义字段与链接)
+    // 适配器选择时更新描述
+    $('#f-adapter').onchange = () => {
+      const a = (_ADAPTERS || []).find(x => x.name === $('#f-adapter').value);
+      $('#f-adapter-hint').textContent = a ? a.description : '';
+    };
     // 自动获取模型(L1 免费探测,直连上游模型列表端点,附带元数据)
     let fetchedMeta = [];
     $('#btn-fetch-models').onclick = async () => {
@@ -542,7 +560,7 @@ Pages.keys = {
         <td class="dim" style="font-size:12px">${k.expires_at ? fmtTime(k.expires_at) : '永不过期'}</td>
         <td>${k.enabled ? '<span class="tag ok">启用</span>' : '<span class="tag dim">停用</span>'}</td>
         <td style="white-space:nowrap">
-          <button class="btn ghost" style="padding:3px 9px;font-size:12px" data-act="copy" data-key="${esc(k.key)}">复制</button>
+          <button class="btn ghost" style="padding:3px 9px;font-size:12px" data-act="copy" data-id="${k.id}">复制</button>
           <button class="btn ghost" style="padding:3px 9px;font-size:12px" data-act="edit" data-id="${k.id}">编辑</button>
           <button class="btn danger" style="padding:3px 9px;font-size:12px" data-act="del" data-id="${k.id}">删除</button>
         </td></tr>`;
@@ -550,7 +568,14 @@ Pages.keys = {
     $$('#key-tbody button').forEach(b => b.onclick = async () => {
       const act = b.dataset.act;
       if (act === 'copy') {
-        navigator.clipboard.writeText(b.dataset.key).then(() => toast('已复制', 'ok'));
+        // 从后端获取完整未脱敏 key
+        try {
+          const d = await api('/admin/api/keys/' + b.dataset.id);
+          await navigator.clipboard.writeText(d.key);
+          toast('已复制完整 Key', 'ok');
+        } catch (e) {
+          toast('复制失败: ' + e.message, 'err');
+        }
       } else if (act === 'edit') {
         this.edit(list.find(x => x.id === +b.dataset.id));
       } else if (act === 'del') {
@@ -1118,7 +1143,7 @@ Pages.settings = {
       return `<tr>
         <td class="mono" style="font-size:12px">${esc(p.id)}</td>
         <td><b>${esc(p.name)}</b>${p.note ? `<div class="dim" style="font-size:11px">${esc(p.note)}</div>` : ''}</td>
-        <td class="mono" style="font-size:12px">${esc(p.adapter)}</td>
+        <td style="font-size:12px">${esc(_adapterLabels[p.adapter] || p.adapter)}</td>
         <td class="mono" style="font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.base_url)}">${esc(p.base_url || '-')}</td>
         <td class="mono">${(p.models || []).length}</td>
         <td class="dim" style="font-size:11px">${customs.length ? customs.map(k => esc(k)).join(', ') : '-'}</td>
@@ -1134,13 +1159,14 @@ Pages.settings = {
       else if (act === 'del') this.presetDel(id);
     });
   },
-  presetEdit(p) {
+  async presetEdit(p) {
     const isEdit = !!p;
     const d = p || {id: '', name: '', adapter: 'openai_compat', base_url: '', models: [],
       probe_mode: 'models', user_agent: '', needs_proxy: false, local: false, note: '',
       key_url: '', custom_1_label: '', custom_1_key: '', custom_1_placeholder: '',
       custom_2_label: '', custom_2_key: '', custom_2_placeholder: ''};
     const escM = (s) => esc(JSON.stringify(s || [], null, 0));
+    await loadAdapters();
     openModal(isEdit ? '编辑预设' : '新增预设', `
       <div class="form-row">
         <div class="field"><label>预设 ID *</label><input id="pr-id" value="${esc(d.id)}" ${isEdit ? 'readonly' : ''} placeholder="如 agnes(英文,唯一标识)"></div>
@@ -1149,8 +1175,9 @@ Pages.settings = {
       <div class="form-row">
         <div class="field" style="flex:2"><label>Base URL</label><input id="pr-base" value="${esc(d.base_url)}" placeholder="https://..."></div>
         <div class="field"><label>适配器</label>
-          <select id="pr-adapter">${['openai_compat','anthropic','gemini','azure'].map(a =>
-            `<option ${a === d.adapter ? 'selected' : ''}>${a}</option>`).join('')}</select></div>
+          <select id="pr-adapter">${(_ADAPTERS || []).map(a =>
+            `<option value="${a.name}" ${a.name === d.adapter ? 'selected' : ''}>${esc(a.label)}</option>`).join('')}</select>
+          <div class="hint" id="pr-adapter-hint" style="margin-top:4px">${esc((_ADAPTERS || []).find(x => x.name === d.adapter)?.description || '')}</div></div>
       </div>
       <div class="form-row">
         <div class="field"><label>探测方式</label>
@@ -1187,6 +1214,11 @@ Pages.settings = {
     `, `
       <button class="btn ghost" onclick="closeModal()">取消</button>
       <button class="btn" id="btn-save-preset">保存</button>`);
+    // 预设适配器选择时更新描述
+    $('#pr-adapter').onchange = () => {
+      const a = (_ADAPTERS || []).find(x => x.name === $('#pr-adapter').value);
+      $('#pr-adapter-hint').textContent = a ? a.description : '';
+    };
     $('#btn-save-preset').onclick = async () => {
       const id = $('#pr-id').value.trim();
       if (!id || !$('#pr-name').value.trim()) return toast('ID 和名称必填', 'err');
