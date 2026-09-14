@@ -11,6 +11,7 @@ _queue: deque[dict] = deque()
 _flush_event = threading.Event()
 _running = False
 _thread: threading.Thread | None = None
+_app = None  # Flask app 实例,由 start(app) 传入
 
 # 批量配置
 MAX_BATCH_SIZE = 50      # 单次最多写入条数
@@ -18,12 +19,17 @@ FLUSH_INTERVAL = 2.0     # 强制刷盘间隔(秒)
 MAX_QUEUE_SIZE = 5000    # 队列上限,超出时丢弃最旧记录
 
 
-def start():
-    """启动后台刷盘线程"""
-    global _running, _thread
+def start(app=None):
+    """启动后台刷盘线程
+    
+    Args:
+        app: Flask app 实例,建议在 create_app 中传入以确保 app context 可用
+    """
+    global _running, _thread, _app
     with _lock:
         if _running:
             return
+        _app = app
         _running = True
         _thread = threading.Thread(target=_flush_loop, daemon=True, name="log-writer")
         _thread.start()
@@ -62,6 +68,17 @@ def _force_flush():
     from .db import db
     from .models import CallLog, UsageLog
 
+    # 获取 app 实例:优先使用 _app,否则回退到 db.app
+    app = _app
+    if app is None:
+        try:
+            app = db.app
+        except Exception:
+            pass
+    if app is None:
+        logger.error("日志批量写入失败: 无可用 Flask app 实例")
+        return
+
     while True:
         with _lock:
             if not _queue:
@@ -71,7 +88,7 @@ def _force_flush():
                 batch.append(_queue.popleft())
 
         try:
-            with db.app.app_context():
+            with app.app_context():
                 for record in batch:
                     try:
                         log_type = record.pop("_log_type", "call")
@@ -83,7 +100,7 @@ def _force_flush():
                         logger.error("日志记录构造失败: %s", e)
                 db.session.commit()
         except Exception as e:
-            logger.error("日志批量写入失败: %s", e)
+            logger.error("日志批量写入失败: %s", e, exc_info=True)
             try:
                 db.session.rollback()
             except Exception:

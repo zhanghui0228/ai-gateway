@@ -66,7 +66,7 @@ def create_app():
 
     # 启动异步日志批量写入
     from gateway import logqueue
-    logqueue.start()
+    logqueue.start(app)
 
     # 渠道定时健康探测(L1 免费模型列表探测)
     from gateway import probe
