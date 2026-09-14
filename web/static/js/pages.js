@@ -1024,6 +1024,7 @@ Pages.settings = {
       <div class="sub-nav" style="display:flex;gap:4px;margin-bottom:16px">
         <button class="btn ghost sub-nav-btn ${this.subPage === 'basic' ? 'active' : ''}" data-sub="basic">基本设置</button>
         <button class="btn ghost sub-nav-btn ${this.subPage === 'presets' ? 'active' : ''}" data-sub="presets">预设厂商</button>
+        <button class="btn ghost sub-nav-btn ${this.subPage === 'update' ? 'active' : ''}" data-sub="update">更新设置</button>
       </div>
       <div id="settings-content"></div>`;
     $$('.sub-nav-btn').forEach(b => b.onclick = () => {
@@ -1033,12 +1034,14 @@ Pages.settings = {
       this.renderSub();
       // 写入 hash,刷新/前进后退可保留子页
       if (b.dataset.sub === 'presets') history.replaceState(null, '', '#settings:presets');
+      else if (b.dataset.sub === 'update') history.replaceState(null, '', '#settings:update');
       else history.replaceState(null, '', window.location.pathname);
     });
     this.renderSub();
   },
   async renderSub() {
     if (this.subPage === 'presets') await this.renderPresets();
+    else if (this.subPage === 'update') await this.renderUpdate();
     else await this.renderBasic();
   },
   async renderBasic() {
@@ -1116,6 +1119,186 @@ Pages.settings = {
         toast('密码已修改', 'ok'); $('#s-old').value = $('#s-new').value = '';
       } catch (e) { toast(e.message, 'err'); }
     };
+  },
+  /* ---------- 更新设置子页 ---------- */
+  async renderUpdate() {
+    const c = $('#settings-content');
+    c.innerHTML = `
+      <div class="panel" style="padding:20px;max-width:680px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <h3 style="font-size:14px;color:var(--text-dim)">版本与更新</h3>
+          <div style="display:flex;gap:8px">
+            <button class="btn ghost" id="btn-up-check" style="padding:4px 12px;font-size:12px">立即检查更新</button>
+            <button class="btn" id="btn-up-apply" style="padding:4px 12px;font-size:12px">一键更新</button>
+          </div>
+        </div>
+        <div id="up-status">载入中...</div>
+      </div>
+      <div class="panel" style="padding:20px;max-width:680px;margin-top:18px">
+        <h3 style="font-size:14px;color:var(--text-dim);margin-bottom:14px">更新设置</h3>
+        <div class="form-row">
+          <div class="field"><label>启用新版本提醒</label><select id="s-up-enabled">
+            <option value="1">启用(自动检查并在侧栏提醒)</option>
+            <option value="0">停用</option></select></div>
+          <div class="field"><label>自动检查间隔(小时,0=仅手动)</label><input id="s-up-interval" type="number"></div>
+        </div>
+        <div class="field"><label>更新源仓库 URL</label><input id="s-up-repo" placeholder="https://github.com/xxx/xxx.git 或 git@host:path"></div>
+        <div class="field"><label>备用更新源仓库 URL(主源不可达时自动切换,可留空)</label><input id="s-up-repo-fallback" placeholder="https://gitcode.com/xxx/xxx.git 或 git@host:path"></div>
+        <div class="field"><label>备用更新源仓库 URL(主源不可达时自动切换,可留空)</label><input id="s-up-repo-fallback" placeholder="https://gitcode.com/xxx/xxx.git 或 git@host:path"></div>
+        <div class="form-row">
+          <div class="field"><label>更新分支</label><input id="s-up-branch" placeholder="main"></div>
+          <div class="field"><label>更新后自动处理</label><select id="s-up-restart">
+            <option value="1">自动重启服务 / 重建容器</option>
+            <option value="0">仅拉取代码,手动处理</option></select></div>
+        </div>
+        <div class="field"><label>更新方式</label>
+          <select id="s-up-mode" style="max-width:420px">
+            <option value="direct">直接运行(拉取代码后自动重启当前服务进程)</option>
+            <option value="docker">Docker(拉取代码后执行 docker compose up -d --build)</option></select>
+          <div class="hint" id="s-up-mode-hint"></div></div>
+        <div style="margin-top:16px;display:flex;justify-content:flex-end">
+          <button class="btn" id="btn-save-up">保存设置</button></div>
+      </div>`;
+    $('#btn-up-check').onclick = () => this.doCheck();
+    $('#btn-up-apply').onclick = () => this.confirmApply();
+    $('#s-up-mode').onchange = () => this.updateModeHint();
+    $('#btn-save-up').onclick = () => this.saveUpdateSettings();
+    const s = await api('/admin/api/settings');
+    $('#s-up-enabled').value = (s.update_enabled === '0' || s.update_enabled === 0) ? '0' : '1';
+    $('#s-up-repo').value = s.update_repo || '';
+    $('#s-up-repo-fallback').value = s.update_repo_fallback || '';
+    $('#s-up-repo-fallback').value = s.update_repo_fallback || '';
+    $('#s-up-branch').value = s.update_branch || '';
+    $('#s-up-interval').value = s.update_check_interval ?? 6;
+    $('#s-up-restart').value = (s.update_auto_restart === '0' || s.update_auto_restart === 0) ? '0' : '1';
+    $('#s-up-mode').value = s.update_mode === 'docker' ? 'docker' : 'direct';
+    this.updateModeHint();
+    this.refreshUpdateStatus();
+  },
+  updateModeHint() {
+    const m = $('#s-up-mode').value;
+    $('#s-up-mode-hint').textContent = m === 'docker'
+      ? '需在项目根目录提供 docker-compose.yml / compose.yml;更新后自动重建容器'
+      : '直接运行:git pull 后自动重启当前服务进程(备用方案:仅拉取代码手动重启)';
+  },
+  /* 版本信息卡片 + 更新结果 */
+  async refreshUpdateStatus() {
+    const box = $('#up-status');
+    if (!box) return;
+    let st;
+    try { st = await api('/admin/api/update/status'); }
+    catch (e) { box.innerHTML = `<div class="hint">状态获取失败: ${esc(e.message)}</div>`; return; }
+    const cur = st.current || {}, lat = st.latest || {};
+    const fmtD = t => t ? new Date(t).toLocaleString('zh-CN', {hour12: false}) : '-';
+    box.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div style="border:1px solid rgba(0,229,255,.15);border-radius:6px;padding:10px 12px">
+          <div class="dim" style="font-size:11px;margin-bottom:4px">当前版本(本地)</div>
+          <div class="mono" style="font-size:14px">${cur.short ? esc(cur.short) : '-'}</div>
+          <div class="dim" style="font-size:11px;word-break:break-all">${cur.subject ? esc(cur.subject) : '非 git 仓库'}</div>
+          <div class="dim" style="font-size:11px">${cur.date ? fmtD(cur.date) : ''}</div>
+        </div>
+        <div style="border:1px solid rgba(0,229,255,.15);border-radius:6px;padding:10px 12px">
+          <div class="dim" style="font-size:11px;margin-bottom:4px">远端最新(${esc(st.interval_hours)}h 自动检查)</div>
+          <div class="mono" style="font-size:14px">${lat.short ? esc(lat.short) : '<span class="dim" style="font-size:12px">尚未检查</span>'}</div>
+          <div class="dim" style="font-size:11px;word-break:break-all">${lat.subject ? esc(lat.subject) : ''}</div>
+          <div class="dim" style="font-size:11px">${lat.date ? fmtD(lat.date) : ''}</div>
+        </div>
+      </div>
+      <div style="margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        ${st.has_update
+          ? `<span class="tag" style="color:#ff5f6d;border-color:rgba(255,95,109,.45)">发现新版本${st.behind > 0 ? ' · 落后 ' + st.behind + ' 个提交' : ''}</span>
+             <button class="btn" id="btn-up-go" style="padding:4px 12px;font-size:12px">立即更新</button>`
+          : '<span class="tag info">已是最新版本</span>'}
+        ${st.checking ? '<span class="dim" style="font-size:12px">正在检查远端...</span>' : ''}
+        ${st.applying ? '<span class="dim" style="font-size:12px">更新执行中...</span>' : ''}
+        <span class="dim" style="font-size:12px">上次检查: ${st.last_check ? fmtD(st.last_check * 1000) : '从未'}</span>
+        ${st.used_repo ? `<div class="dim" style="font-size:12px;width:100%">本次实际使用节点: <span class="mono" style="font-size:11px;word-break:break-all;color:var(--text)">${esc(st.used_repo)}</span></div>` : ''}
+      </div>
+      ${st.result_error ? `<div style="margin-top:8px;font-size:12px;color:#ff5f6d">上次检查失败: ${esc(st.result_error)}</div>` : ''}
+      <div id="up-apply-box" style="margin-top:10px"></div>`;
+    if (st.has_update) $('#btn-up-go').onclick = () => this.confirmApply();
+    const ab = $('#up-apply-box');
+    if (st.apply) {
+      const a = st.apply;
+      ab.innerHTML = `<div style="font-size:12px;margin-top:4px">最近更新: ${fmtD((a.finished_at || a.started_at || 0) * 1000)}
+        <span style="color:${a.ok ? '#4ade80' : '#ff5f6d'}">${a.ok ? '成功' : '失败'}</span>
+        — ${esc(a.message)}</div>
+        ${(a.steps || []).map(x => `<div class="mono" style="font-size:11px;color:${x.ok ? '#4ade80' : '#ff5f6d'};margin-top:2px">
+          ${esc(x.ok ? '✔' : '✘')} ${esc(x.cmd)}${x.err ? ' — ' + esc(x.err) : ''}</div>`).join('')}`;
+    }
+    this.applyButtonState(st);
+  },
+  applyButtonState(st) {
+    const checkBtn = $('#btn-up-check'), applyBtn = $('#btn-up-apply');
+    if (!checkBtn) return;
+    const busy = !!(st.applying || st.checking);
+    checkBtn.disabled = applyBtn.disabled = busy;
+    checkBtn.textContent = st.checking ? '检查中...' : '立即检查更新';
+    applyBtn.textContent = st.applying ? '更新中...' : '一键更新';
+  },
+  /* 一键更新执行期间每秒轮询,结束后刷新结果 */
+  async refreshWithPolling() {
+    for (let i = 0; i < 180; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      let st;
+      try { st = await api('/admin/api/update/status'); }
+      catch (e) { continue; }   // 服务重启期间请求失败属正常
+      if (!st) continue;
+      this.applyButtonState(st);
+      if (!st.applying) {
+        this.refreshUpdateStatus();
+        if (st.apply && st.apply.ok && st.apply.needs_restart) toast(st.apply.message, 'ok');
+        else if (st.apply && !st.apply.ok) toast(st.apply.message, 'err');
+        return;
+      }
+    }
+    this.refreshUpdateStatus();
+  },
+  async confirmApply() {
+    openModal('确认一键更新', `
+      <div style="font-size:13px;line-height:1.9">
+        <p>将拉取更新源仓库的最新代码并合并到本地,<b>更新期间服务可能出现短暂中断</b>。</p>
+        <p>执行方式: <span class="mono">${esc($('#s-up-mode').value === 'docker' ? 'docker compose up -d --build' : 'git pull + 自动重启服务')}</span></p>
+        <p class="hint">Docker 方式会重建容器;直接运行方式会重启当前服务进程(页面会短暂无法访问)。</p>
+      </div>`,
+      `<button class="btn ghost" style="margin-right:8px" onclick="closeModal()">取消</button>
+       <button class="btn danger" id="btn-confirm-up">确认更新</button>`);
+    $('#btn-confirm-up').onclick = async () => {
+      closeModal();
+      try {
+        await apiPost('/admin/api/update/apply', {});
+        this.refreshUpdateStatus();
+        this.refreshWithPolling();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  },
+  async doCheck() {
+    const btn = $('#btn-up-check');
+    if (!btn) return;
+    btn.disabled = true; btn.textContent = '检查中...';
+    try {
+      await apiPost('/admin/api/update/check', {});
+      setTimeout(() => this.refreshUpdateStatus(), 500);
+    } catch (e) {
+      toast(e.message, 'err');
+      btn.disabled = false; btn.textContent = '立即检查更新';
+    }
+  },
+  async saveUpdateSettings() {
+    try {
+      await apiPost('/admin/api/settings', {
+        update_enabled: $('#s-up-enabled').value,
+        update_repo: ($('#s-up-repo').value || '').trim(),
+        update_repo_fallback: ($('#s-up-repo-fallback').value || '').trim(),
+        update_repo_fallback: ($('#s-up-repo-fallback').value || '').trim(),
+        update_branch: ($('#s-up-branch').value || '').trim() || 'main',
+        update_mode: $('#s-up-mode').value,
+        update_check_interval: $('#s-up-interval').value,
+        update_auto_restart: $('#s-up-restart').value,
+      });
+      toast('更新设置已保存', 'ok');
+    } catch (e) { toast(e.message, 'err'); }
   },
   /* ---------- 预设厂商子页 ---------- */
   async renderPresets() {

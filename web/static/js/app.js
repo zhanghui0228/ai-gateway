@@ -34,9 +34,27 @@ async function boot() {
     const { page, sub } = parseHash();
     switchPage(page, false, sub);
   });
+  // 版本更新提醒角标(进入时检查,之后每 10 分钟刷新)
+  checkUpdateTip();
+  setInterval(checkUpdateTip, 600000);
   // 启动时按 hash 切页,无 hash 默认总览
   const { page, sub } = parseHash();
   await switchPage(page, false, sub);
+}
+
+/* 有新版本时在侧栏显示提醒入口 */
+async function checkUpdateTip() {
+  try {
+    const st = await api('/admin/api/update/status');
+    const el = $('#update-tip');
+    if (st && st.enabled && st.has_update && !st.applying) {
+      el.style.display = '';
+      $('#update-tip-text').textContent = '有新版本' + (st.behind > 0 ? ' (+' + st.behind + ')' : '');
+      el.onclick = () => switchPage('settings', true, 'update');
+    } else {
+      el.style.display = 'none';
+    }
+  } catch (e) { /* 不阻塞控制台 */ }
 }
 
 async function switchPage(name, write, sub) {

@@ -1,5 +1,7 @@
 """AIGateway 入口"""
 import os
+import threading
+import time
 
 from flask import Flask, jsonify, redirect, render_template, request, send_from_directory, session
 from sqlalchemy import inspect, text
@@ -66,6 +68,22 @@ def create_app():
     probe.start_scheduler(app)
     # 注册缓存过期清理(随探测调度器周期执行)
     probe.register_cleanup(cache_mod.cache.cleanup_expired)
+
+    # 版本更新:启动后静默检查一次,失败不影响启动(仅用于尽早给出提醒)
+    from gateway import updater as updater_mod
+
+    def _bg_update_check():
+        def _do():
+            time.sleep(5)
+            try:
+                with app.app_context():
+                    updater_mod.check_update(updater_mod.get_settings())
+            except Exception:
+                pass
+
+        threading.Thread(target=_do, daemon=True, name="update-check-startup").start()
+
+    _bg_update_check()
 
     from routes.admin_api import admin_bp
     from routes.screen_api import screen_bp

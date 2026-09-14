@@ -3,6 +3,7 @@ from functools import wraps
 
 from flask import jsonify, request, session
 
+import config
 from .models import Admin, ApiKey, Setting
 
 
@@ -69,6 +70,10 @@ def default_settings():
         "log_bodies": "1", "log_body_max": "2000", "log_retention_days": "7",
         "cache_enabled": "1", "cache_stream": "1", "cache_ttl": "300",
         "cache_max_memory": "200", "cache_max_sqlite": "10000",
+        "update_enabled": "1", "update_repo": config.UPDATE_REPO,
+        "update_repo_fallback": config.UPDATE_REPO_FALLBACK,
+        "update_branch": config.UPDATE_BRANCH, "update_mode": "direct",
+        "update_check_interval": "6", "update_auto_restart": "1",
     }
     for k, v in defaults.items():
         if Setting.get(k) is None:

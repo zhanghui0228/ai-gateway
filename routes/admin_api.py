@@ -4,7 +4,7 @@ import httpx
 from flask import (Blueprint, current_app, jsonify, request, session)
 
 import config
-from gateway import balancer, events, pricing, stats
+from gateway import balancer, events, pricing, stats, updater, updater
 from gateway.auth import admin_required, default_settings
 from gateway.db import db
 from gateway.models import Admin, ApiKey, Channel, ModelPrice, Preset, Setting, UsageLog
@@ -762,7 +762,9 @@ def get_settings():
                      "auto_timeout", "auto_max_models",
                      "log_bodies", "log_body_max", "log_retention_days",
                      "cache_enabled", "cache_stream", "cache_ttl",
-                     "cache_max_memory", "cache_max_sqlite")})
+                     "cache_max_memory", "cache_max_sqlite",
+                     "update_enabled", "update_repo", "update_repo_fallback",
+                     "update_branch", "update_mode", "update_check_interval", "update_auto_restart")})
 
 
 @admin_bp.route("/settings", methods=["POST"])
@@ -784,6 +786,37 @@ def set_settings():
     for ck in ("cache_enabled", "cache_stream", "cache_ttl", "cache_max_memory", "cache_max_sqlite"):
         if ck in data:
             Setting.set(ck, str(data[ck]))
+    # 版本更新设置
+    if "update_enabled" in data:
+        Setting.set("update_enabled", "1" if str(data["update_enabled"]) == "1" else "0")
+    if "update_repo" in data:
+        repo = (data["update_repo"] or "").strip()
+        if not updater.validate_repo_url(repo):
+            return jsonify({"error": "更新仓库地址无效(仅支持 http(s) 或 git@host:path)"}), 400
+        Setting.set("update_repo", repo)
+    if "update_repo_fallback" in data:
+        fallback = (data["update_repo_fallback"] or "").strip()
+        if fallback and not updater.validate_repo_url(fallback):
+            return jsonify({"error": "备用更新仓库地址无效(仅支持 http(s) 或 git@host:path,可留空)"}), 400
+        Setting.set("update_repo_fallback", fallback)
+    if "update_branch" in data:
+        branch = (data["update_branch"] or "").strip()
+        if not updater.validate_branch(branch):
+            return jsonify({"error": "更新分支名无效"}), 400
+        Setting.set("update_branch", branch)
+    if "update_mode" in data:
+        mode = str(data["update_mode"])
+        if mode not in ("direct", "docker"):
+            return jsonify({"error": "更新方式仅支持 direct / docker"}), 400
+        Setting.set("update_mode", mode)
+    if "update_check_interval" in data:
+        try:
+            interval = int(data["update_check_interval"])
+        except (TypeError, ValueError):
+            return jsonify({"error": "update_check_interval 必须为整数"}), 400
+        Setting.set("update_check_interval", str(max(0, interval)))
+    if "update_auto_restart" in data:
+        Setting.set("update_auto_restart", "1" if str(data["update_auto_restart"]) == "1" else "0")
     return jsonify({"ok": True})
 
 
@@ -849,3 +882,36 @@ def cache_set_config():
         if ck in data:
             Setting.set(ck, str(data[ck]))
     return jsonify({"ok": True})
+
+
+# ---------- 版本更新 ----------
+@admin_bp.route("/update/status", methods=["GET"])
+@admin_required
+def update_status():
+    """版本更新状态:当前版本 / 是否有新版本 / 更新方式 / 最近检查与更新记录。
+    距上次检查超过间隔时自动后台刷新(不阻塞请求)。"""
+    return jsonify(updater.status())
+
+
+@admin_bp.route("/update/check", methods=["POST"])
+@admin_required
+def update_check():
+    """手动触发一次远端版本检查(阻塞数秒)"""
+    settings = updater.get_settings()
+    if not settings.get("enabled"):
+        return jsonify({"ok": False, "error": "更新提醒已关闭,请先在更新设置中启用"}), 400
+    return jsonify(updater.check_update(settings, force=True))
+
+
+@admin_bp.route("/update/apply", methods=["POST"])
+@admin_required
+def update_apply():
+    """一键更新:按设置方式(direct/docker)拉取并合并远端代码,可选自动重启/重建。
+    在后台线程执行,前端轮询 /update/status 获取结果。"""
+    settings = updater.get_settings()
+    if not settings.get("enabled"):
+        return jsonify({"ok": False, "error": "更新提醒已关闭,请先在更新设置中启用"}), 400
+    threading.Thread(target=updater.apply_update, args=(settings,),
+                     daemon=True, name="update-apply").start()
+    return jsonify({"ok": True, "started": True,
+                    "message": "更新已开始,稍后自动刷新查看结果"})
