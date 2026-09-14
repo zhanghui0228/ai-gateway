@@ -64,6 +64,10 @@ def create_app():
         from gateway.presets import seed_presets
         seed_presets()
 
+    # 启动异步日志批量写入
+    from gateway import logqueue
+    logqueue.start()
+
     # 渠道定时健康探测(L1 免费模型列表探测)
     from gateway import probe
     probe.start_scheduler(app)

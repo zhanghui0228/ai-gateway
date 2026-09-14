@@ -49,6 +49,26 @@ def api_key_required(f):
         if not ok:
             return jsonify({"error": {"message": "额度已耗尽", "type": "quota_exceeded",
                                        "code": "insufficient_quota"}}), 429
+        # 速率限制检查
+        try:
+            from . import ratelimit
+            rpm = int(Setting.get("rate_limit_rpm", "60"))
+            rph = int(Setting.get("rate_limit_rph", "1000"))
+            if rpm > 0 or rph > 0:
+                allowed, rate_info = ratelimit.check_rate(
+                    token, rpm or 999999, rph or 999999)
+                if not allowed:
+                    resp = jsonify({"error": {"message": "请求过于频繁,请稍后重试",
+                                              "type": "rate_limit_error",
+                                              "code": "rate_limited"}})
+                    resp.status_code = 429
+                    resp.headers["X-RateLimit-Limit"] = str(rate_info.get("limit_rpm", ""))
+                    resp.headers["X-RateLimit-Remaining"] = "0"
+                    resp.headers["X-RateLimit-Reset"] = str(rate_info.get("reset_rpm", ""))
+                    resp.headers["Retry-After"] = str(rate_info.get("retry_after", 60))
+                    return resp
+        except Exception:
+            pass  # 限流检查失败不阻塞请求
         request.gw_api_key = row
         return f(*args, **kwargs)
     return wrapper
@@ -75,6 +95,10 @@ def default_settings():
         "log_bodies": "1", "log_body_max": "2000", "log_retention_days": "7",
         "cache_enabled": "1", "cache_stream": "1", "cache_ttl": "300",
         "cache_max_memory": "200", "cache_max_sqlite": "10000",
+        "rate_limit_rpm": "60", "rate_limit_rph": "1000",
+        "login_max_attempts": "5", "login_lockout_duration": "300",
+        "webhook_enabled": "0", "webhook_url": "",
+        "webhook_on_channel_fail": "1", "webhook_on_quota_alert": "1",
         "update_enabled": "1", "update_repo": config.UPDATE_REPO,
         "update_repo_fallback": config.UPDATE_REPO_FALLBACK,
         "update_branch": config.UPDATE_BRANCH, "update_mode": "direct",

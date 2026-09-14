@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AIGateway · 健康检查</title>
+<link rel="icon" type="image/svg+xml" href="/static/img/favicon.svg">
+<link rel="stylesheet" href="/static/css/theme.css">
+<link rel="stylesheet" href="/static/css/console.css">
+<style>
+  .health-container { max-width: 800px; margin: 40px auto; padding: 0 20px; }
+  .health-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+  .health-title { font-size: 16px; font-weight: 600; margin-bottom: 12px; color: var(--text); }
+  .health-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  .health-item { background: var(--bg); border-radius: 6px; padding: 14px; text-align: center; }
+  .health-value { font-size: 28px; font-weight: 700; }
+  .health-label { font-size: 12px; color: var(--dim); margin-top: 4px; }
+  .status-ok { color: #4caf50; }
+  .status-warn { color: #ff9800; }
+  .status-err { color: #f44336; }
+  .refresh-btn { margin-left: auto; }
+  .header-row { display: flex; align-items: center; margin-bottom: 20px; }
+</style>
+</head>
+<body>
+<div class="scanline"></div>
+<div class="health-container">
+  <div class="header-row">
+    <h2 style="margin:0">🖥️ 系统健康检查</h2>
+    <button class="btn refresh-btn" id="btn-refresh" style="margin-left:auto">刷新</button>
+    <a href="/" class="btn" style="margin-left:8px;text-decoration:none">返回控制台</a>
+  </div>
+
+  <div class="health-card">
+    <div class="health-title">渠道状态</div>
+    <div class="health-grid">
+      <div class="health-item">
+        <div class="health-value" id="ch-total">-</div>
+        <div class="health-label">总渠道数</div>
+      </div>
+      <div class="health-item">
+        <div class="health-value status-ok" id="ch-enabled">-</div>
+        <div class="health-label">已启用</div>
+      </div>
+      <div class="health-item">
+        <div class="health-value" id="ch-breaker">-</div>
+        <div class="health-label">熔断中</div>
+      </div>
+      <div class="health-item">
+        <div class="health-value" id="ch-healthy">-</div>
+        <div class="health-label">健康渠道</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="health-card">
+    <div class="health-title">系统状态</div>
+    <div class="health-grid">
+      <div class="health-item">
+        <div class="health-value" id="sys-queue">-</div>
+        <div class="health-label">日志队列</div>
+      </div>
+      <div class="health-item">
+        <div class="health-value" id="sys-time">-</div>
+        <div class="health-label">服务器时间</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="health-card">
+    <div class="health-title">渠道详情</div>
+    <div id="channel-list" style="font-size:13px">加载中...</div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+
+async function loadHealth() {
+  try {
+    const r = await fetch('/admin/api/health');
+    const d = await r.json();
+    $('#ch-total').textContent = d.channels.total;
+    $('#ch-enabled').textContent = d.channels.enabled;
+    $('#ch-breaker').textContent = d.channels.breaker_open;
+    $('#ch-breaker').className = 'health-value ' + (d.channels.breaker_open > 0 ? 'status-warn' : 'status-ok');
+    const healthy = d.channels.enabled - d.channels.breaker_open;
+    $('#ch-healthy').textContent = healthy;
+    $('#ch-healthy').className = 'health-value ' + (healthy > 0 ? 'status-ok' : 'status-err');
+    $('#sys-queue').textContent = d.log_queue;
+    $('#sys-time').textContent = new Date().toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit'});
+  } catch(e) {
+    console.error('健康检查失败:', e);
+  }
+}
+
+async function loadChannels() {
+  try {
+    const r = await fetch('/admin/api/channels');
+    const channels = await r.json();
+    if (!channels.length) {
+      $('#channel-list').innerHTML = '<div style="color:var(--dim)">暂无渠道</div>';
+      return;
+    }
+    let html = '<table style="width:100%;border-collapse:collapse">';
+    html += '<tr style="color:var(--dim);font-size:12px"><td style="padding:6px">渠道</td><td style="padding:6px">优先级</td><td style="padding:6px">权重</td><td style="padding:6px">模型数</td><td style="padding:6px">状态</td><td style="padding:6px">熔断</td></tr>';
+    for (const ch of channels) {
+      const statusClass = ch.enabled ? 'status-ok' : '';
+      const breakerClass = ch.breaker_state === 'open' ? 'status-err' : (ch.breaker_state === 'half_open' ? 'status-warn' : 'status-ok');
+      const breakerText = ch.breaker_state === 'open' ? '熔断' : (ch.breaker_state === 'half_open' ? '半开' : '正常');
+      html += `<tr style="border-top:1px solid var(--border)">
+        <td style="padding:6px">${ch.name}</td>
+        <td style="padding:6px">${ch.priority}</td>
+        <td style="padding:6px">${ch.weight}</td>
+        <td style="padding:6px">${(ch.models||[]).length}</td>
+        <td style="padding:6px" class="${statusClass}">${ch.enabled ? '启用' : '停用'}</td>
+        <td style="padding:6px" class="${breakerClass}">${breakerText}</td>
+      </tr>`;
+    }
+    html += '</table>';
+    $('#channel-list').innerHTML = html;
+  } catch(e) {
+    $('#channel-list').textContent = '加载失败: ' + e.message;
+  }
+}
+
+$('#btn-refresh').onclick = () => { loadHealth(); loadChannels(); };
+loadHealth();
+loadChannels();
+</script>
+</body>
+</html>

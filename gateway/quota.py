@@ -22,15 +22,21 @@ def consume(api_key, total_tokens):
     with _lock:
         api_key.used_tokens = (api_key.used_tokens or 0) + total_tokens
         db.session.commit()
+    # 配额用量预警检查
+    try:
+        from . import webhook
+        webhook.check_quota_alert(api_key)
+    except Exception:
+        pass
 
 
 def log_usage(**kw):
-    """写入调用明细并推送大屏事件"""
-    entry = UsageLog(**kw)
-    db.session.add(entry)
-    db.session.commit()
-    events.publish("usage", entry.to_dict())
-    return entry
+    """写入调用明细(异步队列批量落库)并推送大屏事件"""
+    from . import logqueue
+    record = dict(_log_type="usage", **kw)
+    logqueue.enqueue(record)
+    events.publish("usage", kw)
+    return kw
 
 
 def get_setting_int(key, default):
