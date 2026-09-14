@@ -100,15 +100,16 @@ function flashNum(el, val) {
 }
 
 async function refreshAll() {
+  // 独立请求:单个接口失败不影响其他渲染
+  let ov, trend, byModel, byKey, chans, heat;
+  try { ov = await api('/admin/api/stats/overview?days=1'); } catch (e) { ov = {}; }
+  try { trend = await api('/admin/api/stats/trend?days=1'); } catch (e) { trend = []; }
+  try { byModel = await api('/admin/api/stats/by_model?days=7'); } catch (e) { byModel = []; }
+  try { byKey = await api('/admin/api/stats/by_key?days=7'); } catch (e) { byKey = []; }
+  try { chans = await api('/admin/api/channels'); } catch (e) { chans = []; }
+  try { heat = await api('/admin/api/stats/hourly_heatmap?days=7'); } catch (e) { heat = []; }
+
   try {
-    const [ov, trend, byModel, byKey, chans, heat] = await Promise.all([
-      api('/admin/api/stats/overview?days=1'),
-      api('/admin/api/stats/trend?days=1'),
-      api('/admin/api/stats/by_model?days=7'),
-      api('/admin/api/stats/by_key?days=7'),
-      api('/admin/api/channels'),
-      api('/admin/api/stats/hourly_heatmap?days=7'),
-    ]);
     flashNum($('#k-calls'), ov.total_calls);
     flashNum($('#k-rate'), ov.success_rate + '%');
     flashNum($('#k-tokens'), fmtTokens(ov.today_tokens));

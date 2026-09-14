@@ -851,13 +851,12 @@ Pages.usage = {
   async refresh() {
     const days = $('#u-days') ? +$('#u-days').value : 7;
     this.logState.days = days;
-    const [ov, byModel, byChan, heat, daily] = await Promise.all([
-      api(`/admin/api/stats/overview?days=${days}`),
-      api(`/admin/api/stats/by_model?days=${days}`),
-      api(`/admin/api/stats/by_channel?days=${days}`),
-      api(`/admin/api/stats/hourly_heatmap?days=7`),
-      api(`/admin/api/stats/daily?days=14`),
-    ]);
+    let ov, byModel, byChan, heat, daily;
+    try { ov = await api(`/admin/api/stats/overview?days=${days}`); } catch (e) { ov = {}; }
+    try { byModel = await api(`/admin/api/stats/by_model?days=${days}`); } catch (e) { byModel = []; }
+    try { byChan = await api(`/admin/api/stats/by_channel?days=${days}`); } catch (e) { byChan = []; }
+    try { heat = await api('/admin/api/stats/hourly_heatmap?days=7'); } catch (e) { heat = []; }
+    try { daily = await api('/admin/api/stats/daily?days=14'); } catch (e) { daily = {}; }
     this._lastArgs = [ov, byModel, byChan, heat, daily];
     this.refreshCharts(ov, byModel, byChan, heat, daily);
     await this._refreshLogTable();
@@ -1483,14 +1482,15 @@ Pages.dashboard = {
     await this.refresh();
   },
   async refresh() {
-    const [ov, trend, channels, heat, cacheSt, cacheTrend] = await Promise.all([
-      api('/admin/api/stats/overview?days=1'),
-      api('/admin/api/stats/trend?days=1'),
-      api('/admin/api/channels'),
-      api('/admin/api/stats/hourly_heatmap?days=7'),
-      api('/admin/api/cache/stats'),
-      api('/admin/api/cache/trend?hours=24'),
-    ]);
+    // 独立请求:单个接口失败不影响其他渲染
+    let ov, trend, channels, heat, cacheSt, cacheTrend;
+    try { ov = await api('/admin/api/stats/overview?days=1'); } catch (e) { ov = {}; }
+    try { trend = await api('/admin/api/stats/trend?days=1'); } catch (e) { trend = []; }
+    try { channels = await api('/admin/api/channels'); } catch (e) { channels = []; }
+    try { heat = await api('/admin/api/stats/hourly_heatmap?days=7'); } catch (e) { heat = []; }
+    try { cacheSt = await api('/admin/api/cache/stats'); } catch (e) { cacheSt = {}; }
+    try { cacheTrend = await api('/admin/api/cache/trend?hours=24'); } catch (e) { cacheTrend = []; }
+    try {
     $('#d-stats').innerHTML = [
       ['今日调用', ov.total_calls, 'cyan'], ['今日 Tokens', fmtTokens(ov.today_tokens), 'purple'],
       ['平均延迟', fmtMs(ov.avg_latency_ms), 'amber'], ['在线渠道', `${ov.online_channels} / ${ov.total_channels}`, 'green'],
