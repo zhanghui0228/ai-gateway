@@ -2,6 +2,10 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# 安装 git(自动更新功能需要)
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 # 依赖单独一层,利用构建缓存
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
