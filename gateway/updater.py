@@ -212,11 +212,30 @@ def apply_update(settings):
             if not st["ok"]:
                 errs.append("%s: %s" % (repo, st["err"]))
                 continue
+
+            # 合并前先暂存本地未提交改动(容器部署时 COPY 可能带入宿主机脏文件,
+            # 直接 merge 会被 git 拒绝);合并成功丢弃暂存,失败则恢复保留本地改动
+            ok, before = _run([GIT, "stash", "list"], timeout=30)
+            stash_n = len([l for l in (before or "").splitlines() if l.strip()]) if ok else 0
+            st = _step(["git", "stash", "--include-untracked"], timeout=60)
+            steps.append(st)
+            if not st["ok"]:
+                return _apply_result(ok=False, message="暂存本地改动失败: " + st["err"],
+                                     steps=steps)
             st = _step(["git", "merge", "--ff-only", "FETCH_HEAD"], timeout=60)
             steps.append(st)
             if not st["ok"]:
-                return _apply_result(ok=False, message="合并失败(请确认无未提交的本地修改): " + st["err"],
+                # 合并失败: 恢复本地改动,避免吞掉用户的未提交内容
+                pop = _step(["git", "stash", "pop"], timeout=60)
+                steps.append(pop)
+                return _apply_result(ok=False,
+                                     message="合并失败(快进合并无法完成,可能本地有分叉提交): " + st["err"],
                                      steps=steps)
+            # 快进成功: 本地改动已被新版覆盖或冲突,丢弃本次创建的暂存
+            ok, after = _run([GIT, "stash", "list"], timeout=30)
+            stash_n_after = len([l for l in (after or "").splitlines() if l.strip()]) if ok else 0
+            if stash_n_after > stash_n:
+                _step([GIT, "stash", "drop", "stash@{%d}" % (stash_n_after - 1)], timeout=30)
             used_repo = repo
             break
         if used_repo is None:
