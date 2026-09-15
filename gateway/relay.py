@@ -327,6 +327,7 @@ def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_ti
     last_channel = None
     prev_tier = None
     _tier_labels = {0: "未分类", 1: "第一梯队", 2: "第二梯队", 3: "第三梯队"}
+    miss_counted = False  # 每个请求只计一次 miss(跨渠道去重)
     for attempt, channel in enumerate(candidates):
         if attempt >= max_retry:
             break
@@ -343,7 +344,9 @@ def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_ti
         # ---------- 渠道级缓存检查(不同渠道独立缓存) ----------
         if cache_key:
             channel_cache_key = f"{cache_key}:{channel.id}"
-            cached = cache_mod.cache.get(channel_cache_key)
+            cached = cache_mod.cache.get(channel_cache_key, count_miss=not miss_counted)
+            if not cached and not miss_counted:
+                miss_counted = True
             if cached:
                 if stream:
                     return _serve_cached_stream(cached, ctx, model, kind, started, channel_cache_key, api_key_row)
@@ -419,7 +422,8 @@ def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_ti
                     channel_cache_key = f"{cache_key}:{channel.id}"
                     cache_mod.cache.put(
                         cache_key=channel_cache_key, kind=kind, model=model,
-                        response_body=resp_text, prompt_tokens=pt, completion_tokens=ct)
+                        response_body=resp_text, prompt_tokens=pt, completion_tokens=ct,
+                        body=openai_body)
                 return Response(resp_text, status=200, content_type="application/json",
                                 headers={"X-Request-Id": request_id})
 
@@ -549,7 +553,8 @@ def _do_stream(app, api_key_row, channel, adapter, client, req,
                             cache_mod.cache.put_stream(
                                 cache_key=channel_cache_key, kind=kind, model=model,
                                 chunks=collected_chunks,
-                                prompt_tokens=pt, completion_tokens=ct)
+                                prompt_tokens=pt, completion_tokens=ct,
+                                body=openai_body)
                     else:
                         _log_failure(api_key_row, channel, model, status_code, error_msg,
                                      attempt, started, request_text, kind=kind, ctx=ctx,

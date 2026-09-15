@@ -880,15 +880,25 @@ def set_settings():
 @admin_bp.route("/cache/stats", methods=["GET"])
 @admin_required
 def cache_stats():
-    """缓存统计: 命中率/命中数/未命中数/节省费用/条目数"""
+    """缓存统计: 命中率/命中数/未命中数/节省费用/条目数
+    hits/misses 为 DB 累计口径(重启不丢);upstream 为厂商提示词缓存累计(对比用)"""
     from gateway import cache as cache_mod
     st = cache_mod.cache.stats()
     # 计算累计节省费用
     from sqlalchemy import func
-    from gateway.models import CacheEvent
+    from gateway.models import CacheEvent, UsageLog
     saved = db.session.query(
         func.coalesce(func.sum(CacheEvent.saved_cost), 0)).scalar()
     st["total_saved_cost"] = round(float(saved or 0), 4)
+    # 上游厂商缓存口径:累计提示词缓存读/写 token,与网关响应缓存是两套不同机制
+    try:
+        up = db.session.query(
+            func.coalesce(func.sum(UsageLog.cache_read_tokens), 0),
+            func.coalesce(func.sum(UsageLog.cache_creation_tokens), 0)).scalar()
+        st["upstream"] = {"cache_read_tokens": int(up[0] or 0),
+                          "cache_creation_tokens": int(up[1] or 0)}
+    except Exception:
+        st["upstream"] = {"cache_read_tokens": 0, "cache_creation_tokens": 0}
     return jsonify(st)
 
 
@@ -923,7 +933,8 @@ def cache_clear():
 @admin_required
 def cache_get_config():
     """查看缓存配置"""
-    keys = ("cache_enabled", "cache_stream", "cache_ttl", "cache_max_memory", "cache_max_sqlite")
+    keys = ("cache_enabled", "cache_stream", "cache_ttl", "cache_ttl_deterministic",
+            "cache_max_memory", "cache_max_sqlite")
     return jsonify({k: Setting.get(k) for k in keys})
 
 
@@ -933,7 +944,8 @@ def cache_set_config():
     """更新缓存配置"""
     from flask import request as _rq
     data = _rq.get_json(silent=True) or {}
-    for ck in ("cache_enabled", "cache_stream", "cache_ttl", "cache_max_memory", "cache_max_sqlite"):
+    for ck in ("cache_enabled", "cache_stream", "cache_ttl", "cache_ttl_deterministic",
+               "cache_max_memory", "cache_max_sqlite"):
         if ck in data:
             Setting.set(ck, str(data[ck]))
     return jsonify({"ok": True})

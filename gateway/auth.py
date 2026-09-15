@@ -94,7 +94,8 @@ def default_settings():
         "auto_timeout": "120", "auto_max_models": "5",
         "log_bodies": "1", "log_body_max": "2000", "log_retention_days": "7",
         "cache_enabled": "1", "cache_stream": "1", "cache_ttl": "300",
-        "cache_max_memory": "200", "cache_max_sqlite": "10000",
+        "cache_ttl_deterministic": "3600",
+        "cache_max_memory": "500", "cache_max_sqlite": "10000",
         "rate_limit_rpm": "60", "rate_limit_rph": "1000",
         "login_max_attempts": "5", "login_lockout_duration": "300",
         "webhook_enabled": "0", "webhook_url": "",
@@ -117,3 +118,9 @@ def fix_settings():
     cur = Setting.get("update_repo_fallback")
     if cur and cur.strip() == wrong:
         Setting.set("update_repo_fallback", correct)
+    # 缓存默认值升级: 早期版本 cache_max_memory=200, 现默认 500(老库未自定义才迁移)
+    if Setting.get("cache_max_memory") == "200":
+        Setting.set("cache_max_memory", "500")
+    # 老库补确定性 TTL 设置(新建库由 default_settings 写入)
+    if Setting.get("cache_ttl_deterministic") is None:
+        Setting.set("cache_ttl_deterministic", "3600")

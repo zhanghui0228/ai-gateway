@@ -7,9 +7,14 @@ from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 
 from .db import db
-from .models import ResponseCacheEntry, CacheEvent, Setting
+from .models import ResponseCacheEntry, CacheEvent, Setting, CallLog
 
 # 影响模型输出的字段(用于构造缓存键)
+# user 不进键: 网关转发给上游时不携带该字段,它不影响上游输出,
+# 纳入键反而使同一逻辑请求(不同客户端 user 标识)无法命中;厂商风控隔离
+# 由渠道 API Key 天然承担,无需缓存层重复隔离
+# stream_options 按是否启用归一: 流式请求网关会自动注入 include_usage,
+# 客户端带不带该字段对输出内容无影响,只在键中保留"是否启用"标志
 _CACHE_KEY_FIELDS = (
     "model", "messages", "temperature", "top_p", "top_k",
     "max_tokens", "max_completion_tokens",
@@ -19,14 +24,39 @@ _CACHE_KEY_FIELDS = (
     "logit_bias", "logprobs", "top_logprobs",
     "input",   # embeddings
     "stream",  # 区分流式/非流式,确保缓存键不同
-    # include_usage 等:显式关闭 usage 的请求与未设置/开启的请求响应不同,
-    # 纳入缓存键可避免向未请求 usage 的客户端回放 usage chunk
-    "stream_options",
-    "user",    # 各厂商按 user 做风控/统计,纳入键保证条目隔离
 )
 
-# 每种 kind 的默认 TTL(秒)
-_KIND_TTL = {"chat": 300, "completions": 300, "embeddings": 3600}
+# 确定性输出的 kind: 同输入同输出,TTL 可以放到 1 小时(确定性=可长缓存)
+_DETERMINISTIC_KINDS = {"embeddings"}
+# 确定性输出的判定: temperature=0(或极低) 时 LLM 输出高度稳定
+_DETERMINISTIC_TEMPERATURE_MAX = 0.1
+
+
+def _effective_stream_options(body):
+    """stream_options 归一为布尔 include_usage 标志: 网关对未指定 stream_options 的
+    流式请求会自动注入 include_usage(便于计费), 因此 '缺失' 与 '启用' 等价;
+    只有显式 include_usage=False(未启用 usage)才与启用区分,避免向未请求 usage 的
+    客户端回放 usage chunk"""
+    opts = body.get("stream_options")
+    if isinstance(opts, dict) and opts:
+        return bool(opts.get("include_usage"))
+    return True
+
+
+def build_cache_key(kind, model, body) -> str:
+    """构造缓存键: 提取影响输出的字段 → 归一化 → 排序 JSON → SHA256 hex
+    键按请求模型段分段: 显式模型请求与 auto 请求各归各自段, 互不串键
+    (auto 各候选模型在运行时切换时各存条目, 同候选模型可跨请求共享命中)"""
+    key_obj = {}
+    for f in _CACHE_KEY_FIELDS:
+        if f in body:
+            key_obj[f] = body[f]
+    # user 字段不进键(见 _CACHE_KEY_FIELDS 注释); stream_options 归一为布尔标志
+    key_obj["_include_usage"] = _effective_stream_options(body)
+    key_obj["_model"] = model
+    key_obj["_kind"] = kind
+    blob = json.dumps(key_obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 def _now():
@@ -43,6 +73,38 @@ def _utc_from_naive(dt):
     return dt
 
 
+# 每种 kind 的默认 TTL(秒)
+_KIND_TTL = {"chat": 300, "completions": 300, "embeddings": 3600}
+# 确定性输出(temperature<=0.1 或确定性 kind)的 TTL(秒): 同输入可安全长缓存
+_DETERMINISTIC_TTL = 3600
+
+
+def _is_deterministic(kind, body):
+    """该请求是否为确定性输出: embeddings 类天然确定;
+    chat/completions 在 temperature 极低(<=0.1)时视为稳定,可放长 TTL"""
+    if kind in _DETERMINISTIC_KINDS:
+        return True
+    try:
+        t = float(body.get("temperature"))
+        if 0 <= t <= _DETERMINISTIC_TEMPERATURE_MAX:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+def get_ttl_for(kind, body=None):
+    """按请求特征取 TTL: 确定性输出取较长默认(可被 cache_ttl_deterministic 覆盖),
+    其余用 cache_ttl 默认 300s"""
+    if _is_deterministic(kind, body or {}):
+        try:
+            v = Setting.get("cache_ttl_deterministic", str(_DETERMINISTIC_TTL))
+            return max(60, int(v))
+        except (TypeError, ValueError):
+            return _DETERMINISTIC_TTL
+    return _get_ttl(kind)
+
+
 def should_cache(kind, body):
     """判断请求是否可缓存: 支持的 kind（流式由 cache_stream 设置控制）"""
     if kind not in _KIND_TTL:
@@ -53,18 +115,6 @@ def should_cache(kind, body):
         except Exception:
             return True
     return True
-
-
-def build_cache_key(kind, model, body) -> str:
-    """构造缓存键: 提取影响输出的字段 → 排序 JSON → SHA256 hex"""
-    key_obj = {}
-    for f in _CACHE_KEY_FIELDS:
-        if f in body:
-            key_obj[f] = body[f]
-    key_obj["_model"] = model
-    key_obj["_kind"] = kind
-    blob = json.dumps(key_obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 def _get_ttl(kind):
@@ -78,9 +128,9 @@ def _get_ttl(kind):
 
 def _get_max_memory():
     try:
-        return max(10, int(Setting.get("cache_max_memory", 200)))
+        return max(10, int(Setting.get("cache_max_memory", 500)))
     except (TypeError, ValueError):
-        return 200
+        return 500
 
 
 def _get_max_sqlite():
@@ -130,8 +180,9 @@ class ResponseCache:
 
     # ---------- 核心操作 ----------
 
-    def get(self, cache_key: str):
-        """查缓存: 先内存 LRU, 后 SQLite。命中后更新统计。"""
+    def get(self, cache_key: str, count_miss: bool = True):
+        """查缓存: 先内存 LRU, 后 SQLite。命中后更新统计。
+        count_miss=False 用于请求级去重(渠道循环内查缓存的 miss 只统计一次)。"""
         with self._lock:
             entry = self._lru.get(cache_key)
             if entry:
@@ -150,11 +201,14 @@ class ResponseCache:
         if row and row.expires_at and _utc_from_naive(row.expires_at) > _now():
             # 加载到内存 LRU
             chunks = json.loads(row.chunks) if row.chunks else None
+            # _CacheEntry.expires_at 必须 aware(比较基准是 _now()),
+            # 而 SQLite 读回的列值经 _utc_from_naive 还原,保持口径一致
             entry = _CacheEntry(
                 response_body=row.response_body, chunks=chunks,
                 prompt_tokens=row.prompt_tokens,
                 completion_tokens=row.completion_tokens,
-                model=row.model, kind=row.kind, expires_at=row.expires_at)
+                model=row.model, kind=row.kind,
+                expires_at=_utc_from_naive(row.expires_at))
             with self._lock:
                 self._lru[cache_key] = entry
                 self._evict_if_needed()
@@ -177,14 +231,16 @@ class ResponseCache:
             except Exception:
                 db.session.rollback()
 
-        with self._lock:
-            self._misses += 1
+        if count_miss:
+            with self._lock:
+                self._misses += 1
         return None
 
     def put(self, cache_key: str, kind: str, model: str,
-            response_body: str, prompt_tokens: int, completion_tokens: int):
+            response_body: str, prompt_tokens: int, completion_tokens: int,
+            body: dict = None):
         """写入非流式缓存: 内存 LRU + SQLite"""
-        ttl = _get_ttl(kind)
+        ttl = get_ttl_for(kind, body)
         expires_at = _now() + timedelta(seconds=ttl)
 
         entry = _CacheEntry(
@@ -222,9 +278,10 @@ class ResponseCache:
         self._prune_sqlite()
 
     def put_stream(self, cache_key: str, kind: str, model: str,
-                   chunks: list, prompt_tokens: int, completion_tokens: int):
+                   chunks: list, prompt_tokens: int, completion_tokens: int,
+                   body: dict = None):
         """写入流式缓存: 内存 LRU + SQLite（存储 SSE chunks 数组）"""
-        ttl = _get_ttl(kind)
+        ttl = get_ttl_for(kind, body)
         expires_at = _now() + timedelta(seconds=ttl)
 
         entry = _CacheEntry(
@@ -343,35 +400,62 @@ class ResponseCache:
     # ---------- 统计 ----------
 
     def stats(self) -> dict:
+        """缓存统计: 命中/未命中为 DB 累计口径(重启不丢失)。
+        DB 查询不可用时降级为内存口径。"""
         with self._lock:
             hits, misses = self._hits, self._misses
             mem_size = len(self._lru)
-        try:
-            sqlite_size = ResponseCacheEntry.query.count()
-        except Exception:
-            sqlite_size = 0
         total = hits + misses
-        return {
-            "hits": hits, "misses": misses,
-            "hit_rate": round(hits / total * 100, 1) if total else 0.0,
-            "memory_entries": mem_size,
-            "sqlite_entries": sqlite_size,
-            "max_memory": _get_max_memory(),
-            "max_sqlite": _get_max_sqlite(),
-            "enabled": cache_enabled(),
-        }
+        mem_hit_rate = round(hits / total * 100, 1) if total else 0.0
+        try:
+            from sqlalchemy import func
+            db_hits = int((ResponseCacheEntry.query
+                           .filter(ResponseCacheEntry.hit_count.isnot(None))
+                           .with_entities(func.coalesce(func.sum(ResponseCacheEntry.hit_count), 0))
+                           .scalar()) or 0)
+            # success 列在 SQLite 中存为 1/0,直接比较字面值避免 is_(True) 误编译
+            db_misses = int((CallLog.query
+                             .filter(CallLog.cache_hit == 0,
+                                     CallLog.success == 1)
+                             .with_entities(func.count(CallLog.id)).scalar()) or 0)
+            total = db_hits + db_misses
+            return {
+                "hits": db_hits, "misses": db_misses,
+                "hit_rate": round(db_hits / total * 100, 1) if total else 0.0,
+                "memory_hits": self._hits, "memory_misses": self._misses,
+                "memory_hit_rate": mem_hit_rate,
+                "memory_entries": mem_size,
+                "sqlite_entries": ResponseCacheEntry.query.count(),
+                "max_memory": _get_max_memory(),
+                "max_sqlite": _get_max_sqlite(),
+                "enabled": cache_enabled(),
+            }
+        except Exception:
+            return {
+                "hits": hits, "misses": misses,
+                "hit_rate": mem_hit_rate,
+                "memory_hits": hits, "memory_misses": misses,
+                "memory_hit_rate": mem_hit_rate,
+                "memory_entries": mem_size,
+                "sqlite_entries": 0,
+                "max_memory": _get_max_memory(),
+                "max_sqlite": _get_max_sqlite(),
+                "enabled": cache_enabled(),
+            }
 
     def hit_trend(self, hours=24) -> list:
-        """每小时缓存命中数(从 CacheEvent 聚合)"""
+        """每小时缓存命中数(从 CacheEvent 聚合)。
+        created_at 以 UTC 存储,显式 +8h 对齐北京时间口径(与 stats.py 一致)。"""
         from sqlalchemy import func
         start = _now() - timedelta(hours=hours)
+        bj_hour = func.strftime("%Y-%m-%dT%H:00", CacheEvent.created_at, "+8 hours")
         rows = (db.session.query(
-                    func.strftime("%Y-%m-%dT%H:00", CacheEvent.created_at),
+                    bj_hour,
                     func.count(CacheEvent.id),
                     func.coalesce(func.sum(CacheEvent.saved_cost), 0))
                 .filter(CacheEvent.created_at >= start)
-                .group_by(func.strftime("%Y-%m-%dT%H:00", CacheEvent.created_at))
-                .order_by(func.strftime("%Y-%m-%dT%H:00", CacheEvent.created_at))
+                .group_by(bj_hour)
+                .order_by(bj_hour)
                 .all())
         return [{"hour": r[0], "hits": r[1], "saved_cost": round(float(r[2]), 4)} for r in rows]
 

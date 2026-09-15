@@ -35,7 +35,8 @@ SSE_HEARTBEAT = 15
 
 # 响应缓存默认设置(可在控制台设置中覆盖)
 CACHE_DEFAULT_TTL = 300        # 缓存有效期(秒),chat/completions 默认 5 分钟
-CACHE_MAX_MEMORY = 200         # 内存 LRU 最大条目数
+CACHE_TTL_DETERMINISTIC = 3600 # 确定性输出(temperature<=0.1/embeddings)的 TTL(秒)
+CACHE_MAX_MEMORY = 500         # 内存 LRU 最大条目数
 CACHE_MAX_SQLITE = 10000       # SQLite 持久化最大缓存条目数
 
 # 版本更新设置默认值(可在控制台"系统设置 → 更新设置"中覆盖)

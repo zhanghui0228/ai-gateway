@@ -1476,7 +1476,7 @@ Pages.dashboard = {
         <div class="panel chart-panel"><h3>渠道健康(定时探测)</h3><div id="d-channels" style="height:280px;overflow-y:auto"></div></div>
       </div>
       <div class="chart-flex" style="margin-top:18px">
-        <div class="panel chart-panel"><h3>缓存命中趋势(24h)</h3><div id="d-cache-trend" style="height:300px"></div></div>
+        <div class="panel chart-panel"><h3>响应缓存命中趋势(24h · 零转发)</h3><div id="d-cache-trend" style="height:300px"></div></div>
         <div class="panel chart-panel"><h3>调用时段热点(近7天 · 周x24h)</h3><div id="d-heat" style="height:300px"></div></div>
       </div>`;
     await this.refresh();
@@ -1495,11 +1495,12 @@ Pages.dashboard = {
       ['平均延迟', fmtMs(ov.avg_latency_ms), 'amber'], ['在线渠道', `${ov.online_channels} / ${ov.total_channels}`, 'green'],
     ].map(([l, v, c]) => `<div class="panel stat-card">
       <div class="label"><span>${l}</span></div><div class="value ${c}">${v}</div></div>`).join('');
-    // 缓存 KPI
+    // 缓存 KPI — 网关响应缓存(累计 DB 口径,与厂商提示词缓存是两套机制)
     $('#d-cache-stats').innerHTML = [
-      ['缓存命中', cacheSt.hits || 0, 'purple'], ['命中率', (cacheSt.hit_rate || 0) + '%', 'green'],
+      ['响应缓存命中', cacheSt.hits || 0, 'purple'],
+      ['响应缓存命中率', (cacheSt.hit_rate || 0) + '%', 'green'],
+      ['厂商缓存读取', fmtTokens((cacheSt.upstream || {}).cache_read_tokens || 0), 'cyan'],
       ['节省费用', '¥' + (cacheSt.total_saved_cost || 0).toFixed(2), 'amber'],
-      ['内存缓存', `${cacheSt.memory_entries || 0} / ${cacheSt.max_memory || 0}`, 'cyan'],
     ].map(([l, v, c]) => `<div class="panel stat-card">
       <div class="label"><span>${l}</span></div><div class="value ${c}">${v}</div></div>`).join('');
 
@@ -1592,6 +1593,7 @@ Pages.cache = {
           <button class="btn ghost" id="ca-refresh">⟳ 刷新</button>
           <button class="btn danger" id="ca-clear">🗑 清空缓存</button></div></div>
       <div class="stat-grid" id="ca-stats"></div>
+      <div class="stat-grid" id="ca-upstream-stats"></div>
       <div class="panel chart-panel" style="margin-bottom:18px">
         <div style="display:flex;justify-content:space-between;align-items:center">
           <h3>缓存命中趋势</h3>
@@ -1618,14 +1620,22 @@ Pages.cache = {
           <div class="field"><label>默认 TTL(秒)</label><input id="ca-ttl" type="number" min="10" placeholder="300"></div>
         </div>
         <div class="form-row">
-          <div class="field"><label>内存 LRU 上限(条)</label><input id="ca-mem" type="number" min="10" placeholder="200"></div>
+          <div class="field"><label>确定性输出 TTL(秒)</label><input id="ca-ttl-det" type="number" min="60" placeholder="3600"></div>
+          <div class="field" style="align-self:flex-end"><label class="dim" style="font-size:11px">temperature≤0.1 / embeddings 走此 TTL,其余走默认 TTL</label></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>内存 LRU 上限(条)</label><input id="ca-mem" type="number" min="10" placeholder="500"></div>
           <div class="field"><label>SQLite 上限(条)</label><input id="ca-sqlite" type="number" min="100" placeholder="10000"></div>
         </div>
         <div style="margin-top:16px;display:flex;justify-content:flex-end">
           <button class="btn" id="ca-save">保存配置</button></div>
         <div class="dim" style="font-size:11px;margin-top:10px">
-          说明: 仅缓存非流式请求(chat/completions/embeddings)。相同请求体(Temperature/Messages等)在 TTL 内直接返回缓存结果, 零费用。
-          Embeddings 默认 TTL 1小时(确定性输出)。客户端可通过请求头 <span class="mono">X-Cache-Bypass: 1</span> 强制跳过缓存。
+          说明: 响应缓存缓存 chat/completions/embeddings 中「相同请求体」的输出(按请求体+模型+渠道 SHA256 取键,
+          <b>user 字段与网关注入的 stream_options 不参与取键</b>——不同客户端标识的同一请求也能命中)。命中后零转发零费用。
+          <b>命中率提升</b>: 相同/近似重复请求(批处理、多客户端同 prompt、工具重试、auto 跨候选模型)越多,命中越多;
+          LLM 开放式问答天然难命中。temperature≤0.1 与 embeddings 走「确定性输出 TTL」(可长缓存),其余走默认 TTL。
+          厂商提示词缓存(日志详情 ⚡)是另一套机制——转发到上游时命中其前缀缓存。
+          客户端可通过请求头 <span class="mono">X-Cache-Bypass: 1</span> 强制跳过响应缓存。
         </div>
       </div>`;
     $('#ca-refresh').onclick = () => this.refresh();
@@ -1646,6 +1656,7 @@ Pages.cache = {
         await apiPut('/admin/api/cache/config', {
           cache_enabled: $('#ca-enabled').value,
           cache_ttl: +$('#ca-ttl').value,
+          cache_ttl_deterministic: +$('#ca-ttl-det').value,
           cache_max_memory: +$('#ca-mem').value,
           cache_max_sqlite: +$('#ca-sqlite').value,
         });
@@ -1661,16 +1672,27 @@ Pages.cache = {
       api('/admin/api/cache/recent?limit=50'),
       api('/admin/api/cache/config'),
     ]);
-    // KPI
+    // KPI — 网关响应缓存(零转发,累计 DB 口径)
     $('#ca-stats').innerHTML = [
-      ['命中率', (st.hit_rate || 0) + '%', 'purple'],
-      ['命中数', st.hits || 0, 'cyan'],
-      ['未命中', st.misses || 0, 'amber'],
+      ['响应缓存命中率', (st.hit_rate || 0) + '%', 'purple'],
+      ['响应缓存命中数', st.hits || 0, 'cyan'],
+      ['未命中(请求)', st.misses || 0, 'amber'],
       ['节省费用', '¥' + (st.total_saved_cost || 0).toFixed(2), 'green'],
       ['内存条目', `${st.memory_entries || 0} / ${st.max_memory || 0}`, 'cyan'],
       ['SQLite 条目', st.sqlite_entries || 0, 'dim'],
     ].map(([l, v, c]) => `<div class="panel stat-card">
       <div class="label"><span>${l}</span></div><div class="value ${c}">${v}</div></div>`).join('');
+    // 上游厂商缓存口径(转发到上游时命中其提示词缓存,与网关响应缓存是两套机制)
+    const up = st.upstream || {cache_read_tokens: 0, cache_creation_tokens: 0};
+    $('#ca-upstream-stats').innerHTML = [
+      ['厂商缓存读取', fmtTokens(up.cache_read_tokens), 'green'],
+      ['厂商缓存写入', fmtTokens(up.cache_creation_tokens), 'green'],
+    ].map(([l, v, c]) => `<div class="panel stat-card" style="flex:0 0 180px">
+      <div class="label"><span>${l}</span></div><div class="value ${c}" style="font-size:18px">${v}</div></div>`).join('')
+      + `<div class="panel" style="flex:1;padding:10px 14px">
+        <div class="dim" style="font-size:11px;line-height:1.5">
+          <b style="color:var(--text)">两套缓存口径</b>：「响应缓存」= 相同请求在 TTL 内直接回放缓存结果(零转发零费用,上方 KPI)；「厂商缓存」= 转发到上游时命中上游厂商的提示词缓存(按 token 优惠计费)。日志详情里的 ⚡ 缓存 tag 属后者。
+        </div></div>`;
     // 趋势图
     this._renderTrend(trend);
     // 最近记录
@@ -1687,7 +1709,8 @@ Pages.cache = {
     // 配置
     $('#ca-enabled').value = cfg.cache_enabled === '0' ? '0' : '1';
     $('#ca-ttl').value = cfg.cache_ttl || 300;
-    $('#ca-mem').value = cfg.cache_max_memory || 200;
+    $('#ca-ttl-det').value = cfg.cache_ttl_deterministic || 3600;
+    $('#ca-mem').value = cfg.cache_max_memory || 500;
     $('#ca-sqlite').value = cfg.cache_max_sqlite || 10000;
   },
   async _refreshTrend() {
