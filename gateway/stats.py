@@ -74,12 +74,11 @@ def hourly_trend(days=1):
     total_hours = days * 24
     for i in range(total_hours, -1, -1):
         t = now - timedelta(hours=i)
-        # 北京时间 hour key
-        bj_time = t + timedelta(hours=8)
-        key = bj_time.strftime("%Y-%m-%dT%H:00")
-        # 只保留在 [start, now] 范围内的点
         if t < start:
             continue
+        # 北京时间 hour key(展示与分组同用 +8h,与上方 group_by 口径一致)
+        bj_time = t + timedelta(hours=8)
+        key = bj_time.strftime("%Y-%m-%dT%H:00")
         if key in data:
             result.append({"hour": key, **data[key]})
         else:

@@ -799,10 +799,13 @@ Pages.usage = {
         itemStyle: {borderColor: '#060b18', borderWidth: 2}}]});
     const hmc = mkChart($('#u-heat'));
     const dlabels = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+    // 完整 7x24 矩阵,0 值也占位
     const hmData = [];
     let maxV = 0;
     (heat || []).forEach((row, di) => (row || []).forEach((v, hi) => {
-      if (v) { hmData.push([hi, di, v]); maxV = Math.max(maxV, v); }
+      const val = Number(v) || 0;
+      hmData.push([hi, di, val]);
+      maxV = Math.max(maxV, val);
     }));
     hmc.setOption({
       tooltip: {backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
@@ -813,7 +816,7 @@ Pages.usage = {
       yAxis: {type: 'category', data: dlabels, ...CHART_AXIS},
       visualMap: {min: 0, max: Math.max(1, maxV), orient: 'horizontal', left: 'center', bottom: 0,
         itemWidth: 10, itemHeight: 90, textStyle: CHART_TEXT,
-        inRange: {color: ['rgba(13,22,44,0.5)', '#3b82f6', '#00e5ff', '#10e0a0']}},
+        inRange: {color: ['#0d1630', '#3b82f6', '#00e5ff', '#10e0a0']}},
       series: [{type: 'heatmap', data: hmData,
         itemStyle: {borderColor: '#060b18', borderWidth: 1, borderRadius: 2},
         emphasis: {itemStyle: {shadowBlur: 8, shadowColor: 'rgba(0,229,255,.5)'}}}]});
@@ -870,7 +873,7 @@ Pages.usage = {
     tb.innerHTML = logs.length ? logs.map(l => `<tr>
       <td class="dim" style="font-size:12px;white-space:nowrap">${fmtTime(l.created_at)}</td>
       <td>${esc(l.key_name || '-')}</td>
-      <td>${esc(l.channel_name || '-')}</td>
+      <td>${esc(l.channel_name || '-')}${l.cache_hit ? ' <span class="tag" style="background:rgba(139,92,246,.2);color:#a78bfa;font-size:10px;padding:0 4px">缓存·零转发</span>' : ''}</td>
       <td class="mono" style="font-size:12px">${esc(l.model || '-')}</td>
       <td class="mono">${fmtTokens(l.prompt_tokens)}</td>
       <td class="mono">${fmtTokens(l.completion_tokens)}</td>
@@ -882,7 +885,8 @@ Pages.usage = {
       <td class="mono">${fmtTokens(l.total_tokens)}${l.estimated ? ' <span class="dim" title="估算">≈</span>' : ''}</td>
       <td>${fmtCost(l.cost)}</td>
       <td class="mono">${fmtMs(l.latency_ms)}</td>
-      <td>${l.success ? '<span class="tag ok">' + l.status_code + '</span>'
+      <td>${l.cache_hit ? '<span class="tag" style="background:rgba(139,92,246,.2);color:#a78bfa">⚡ 缓存</span>'
+        : l.success ? '<span class="tag ok">' + l.status_code + '</span>'
         : `<span class="tag err">${l.status_code || 'ERR'}</span>${l.retries ? ' <span class="tag warn">重试' + l.retries + '</span>' : ''}`}</td>
       <td class="dim" style="font-size:11px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(l.error)}">${esc(l.error || '-')}</td>
     </tr>`).join('') : `<tr><td colspan="12"><div class="empty-tip">暂无调用记录</div></td></tr>`;
@@ -1004,7 +1008,7 @@ Pages.logs = {
       <td>${esc(l.channel_name || '-')}</td>
       <td>${esc(l.key_name || '-')}</td>
       <td>${l.is_stream ? '<span class="tag info">流式</span>' : '<span class="dim">普通</span>'}</td>
-      <td class="mono">${fmtTokens(l.prompt_tokens)} / ${fmtTokens(l.completion_tokens)}${l.cache_read_tokens ? ` <span style="color:var(--purple)">⚡${fmtTokens(l.cache_read_tokens)}</span>` : ''}${l.cache_hit ? ' <span class="tag" style="background:rgba(139,92,246,.2);color:#a78bfa;padding:0 4px;font-size:10px">缓存</span>' : ''}</td>
+      <td class="mono">${fmtTokens(l.prompt_tokens)} / ${fmtTokens(l.completion_tokens)}${l.cache_hit ? ' <span class="tag" style="background:rgba(139,92,246,.2);color:#a78bfa;padding:0 4px;font-size:10px">⚡ 网关缓存</span>' : (l.cache_read_tokens ? ` <span style="color:var(--purple)" title="厂商提示词缓存读取">⚡${fmtTokens(l.cache_read_tokens)}</span>` : '')}</td>
       <td>${fmtCost(l.cost)}</td>
       <td class="mono">${fmtMs(l.latency_ms)}</td>
       <td>${l.success ? '<span class="tag ok">' + l.status_code + '</span>'
@@ -1497,7 +1501,7 @@ Pages.dashboard = {
       <div class="label"><span>${l}</span></div><div class="value ${c}">${v}</div></div>`).join('');
     // 缓存 KPI — 网关响应缓存(累计 DB 口径,与厂商提示词缓存是两套机制)
     $('#d-cache-stats').innerHTML = [
-      ['响应缓存命中', cacheSt.hits || 0, 'purple'],
+      ['响应缓存命中', `${cacheSt.hits || 0} · ${fmtTokens(cacheSt.hit_tokens || 0)} tk`, 'purple'],
       ['响应缓存命中率', (cacheSt.hit_rate || 0) + '%', 'green'],
       ['厂商缓存读取', fmtTokens((cacheSt.upstream || {}).cache_read_tokens || 0), 'cyan'],
       ['节省费用', '¥' + (cacheSt.total_saved_cost || 0).toFixed(2), 'amber'],
@@ -1536,35 +1540,36 @@ Pages.dashboard = {
         <span class="dim" style="font-size:12px">${state}</span></div>`;
     }).join('') : `<div class="empty-tip">暂无渠道</div>`;
 
-    /* 缓存命中趋势(24h) */
+    /* 缓存命中趋势(24h):后端按小时补零,始终按完整 24 小时轴展示,全零也画出 0 基线 */
     const cacheChart = mkChart($('#d-cache-trend'));
     const ctData = cacheTrend || [];
-    if (ctData.length) {
-      cacheChart.setOption({
-        tooltip: {trigger: 'axis', backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
-          textStyle: {color: '#d7e6ff', fontSize: 11}},
-        grid: {left: 10, right: 16, top: 30, bottom: 10, containLabel: true},
-        legend: {data: ['命中数', '节省费用'], textStyle: CHART_TEXT, top: 0, right: 0},
-        xAxis: {type: 'category', data: ctData.map(t => t.hour.slice(11, 16)), ...CHART_AXIS},
-        yAxis: [{type: 'value', ...CHART_AXIS, name: '命中数'},
-                {type: 'value', ...CHART_AXIS, splitLine: {show: false}, name: '费用'}],
-        series: [
-          {name: '命中数', type: 'bar', data: ctData.map(t => t.hits), barWidth: 10,
-            itemStyle: {color: {type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-              colorStops: [{offset: 0, color: '#8b5cf6'}, {offset: 1, color: '#6366f1'}]}}},
-          {name: '节省费用', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'circle', symbolSize: 4,
-            data: ctData.map(t => t.saved_cost), lineStyle: {color: '#f59e0b', width: 2},
-            itemStyle: {color: '#f59e0b'}},
-        ]});
-    } else { cacheChart.setOption({title: {text: '暂无缓存数据', left: 'center', top: 'middle', textStyle: CHART_TEXT}}); }
+    cacheChart.setOption({
+      tooltip: {trigger: 'axis', backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
+        textStyle: {color: '#d7e6ff', fontSize: 11}},
+      grid: {left: 10, right: 16, top: 30, bottom: 10, containLabel: true},
+      legend: {data: ['命中数', '节省费用'], textStyle: CHART_TEXT, top: 0, right: 0},
+      xAxis: {type: 'category', data: ctData.map(t => t.hour.slice(11, 16)), ...CHART_AXIS},
+      yAxis: [{type: 'value', ...CHART_AXIS, name: '命中数'},
+              {type: 'value', ...CHART_AXIS, splitLine: {show: false}, name: '费用'}],
+      series: [
+        {name: '命中数', type: 'bar', data: ctData.map(t => t.hits), barWidth: 10,
+          itemStyle: {color: {type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [{offset: 0, color: '#8b5cf6'}, {offset: 1, color: '#6366f1'}]}}},
+        {name: '节省费用', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'circle', symbolSize: 4,
+          data: ctData.map(t => t.saved_cost), lineStyle: {color: '#f59e0b', width: 2},
+          itemStyle: {color: '#f59e0b'}},
+      ]});
 
     /* 调用时段热力图(周 x 24h) */
     const hmc = mkChart($('#d-heat'));
     const days = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+    // 完整 7x24 矩阵,0 值也占位(浅底块 + 深色描边区分,视觉上不消失)
     const hmData = [];
     let maxV = 0;
-    heat.forEach((row, di) => row.forEach((v, hi) => {
-      if (v) { hmData.push([hi, di, v]); maxV = Math.max(maxV, v); }
+    (heat || []).forEach((row, di) => (row || []).forEach((v, hi) => {
+      const val = Number(v) || 0;
+      hmData.push([hi, di, val]);
+      maxV = Math.max(maxV, val);
     }));
     hmc.setOption({
       tooltip: {backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
@@ -1576,7 +1581,7 @@ Pages.dashboard = {
       visualMap: {min: 0, max: Math.max(1, maxV), calculable: false, orient: 'horizontal',
         left: 'center', bottom: 0, itemWidth: 10, itemHeight: 80,
         textStyle: CHART_TEXT,
-        inRange: {color: ['rgba(13,22,44,0.6)', '#3b82f6', '#00e5ff', '#10e0a0']}},
+        inRange: {color: ['#0d1630', '#3b82f6', '#00e5ff', '#10e0a0']}},
       series: [{type: 'heatmap', data: hmData,
         itemStyle: {borderColor: '#060b18', borderWidth: 1, borderRadius: 2},
         emphasis: {itemStyle: {shadowBlur: 8, shadowColor: 'rgba(0,229,255,.5)'}}}]});
@@ -1675,7 +1680,7 @@ Pages.cache = {
     // KPI — 网关响应缓存(零转发,累计 DB 口径)
     $('#ca-stats').innerHTML = [
       ['响应缓存命中率', (st.hit_rate || 0) + '%', 'purple'],
-      ['响应缓存命中数', st.hits || 0, 'cyan'],
+      ['响应缓存命中', `${st.hits || 0} · ${fmtTokens(st.hit_tokens || 0)} tk`, 'cyan'],
       ['未命中(请求)', st.misses || 0, 'amber'],
       ['节省费用', '¥' + (st.total_saved_cost || 0).toFixed(2), 'green'],
       ['内存条目', `${st.memory_entries || 0} / ${st.max_memory || 0}`, 'cyan'],
@@ -1691,7 +1696,9 @@ Pages.cache = {
       <div class="label"><span>${l}</span></div><div class="value ${c}" style="font-size:18px">${v}</div></div>`).join('')
       + `<div class="panel" style="flex:1;padding:10px 14px">
         <div class="dim" style="font-size:11px;line-height:1.5">
-          <b style="color:var(--text)">两套缓存口径</b>：「响应缓存」= 相同请求在 TTL 内直接回放缓存结果(零转发零费用,上方 KPI)；「厂商缓存」= 转发到上游时命中上游厂商的提示词缓存(按 token 优惠计费)。日志详情里的 ⚡ 缓存 tag 属后者。
+          <b style="color:var(--text)">两套缓存口径</b>：「响应缓存」= 相同请求在 TTL 内直接回放缓存结果(零转发零费用,上方 KPI);
+          明细表状态列的 ⚡缓存 / 渠道列的「缓存·零转发」标记均指命中响应缓存;
+          「厂商缓存」= 转发到上游时命中上游厂商的提示词缓存(按 token 优惠计费,日志详情中的 ⚡ 厂商缓存标记属后者)。
         </div></div>`;
     // 趋势图
     this._renderTrend(trend);
@@ -1723,25 +1730,22 @@ Pages.cache = {
     if (!el) return;
     const chart = mkChart(el);
     const data = trend || [];
-    if (data.length) {
-      chart.setOption({
-        tooltip: {trigger: 'axis', backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
-          textStyle: {color: '#d7e6ff', fontSize: 11}},
-        grid: {left: 10, right: 16, top: 30, bottom: 10, containLabel: true},
-        legend: {data: ['命中数', '节省费用'], textStyle: CHART_TEXT, top: 0, right: 0},
-        xAxis: {type: 'category', data: data.map(t => t.hour.slice(5, 16)), ...CHART_AXIS},
-        yAxis: [{type: 'value', ...CHART_AXIS, name: '命中数'},
-                {type: 'value', ...CHART_AXIS, splitLine: {show: false}, name: '费用'}],
-        series: [
-          {name: '命中数', type: 'bar', data: data.map(t => t.hits), barWidth: 10,
-            itemStyle: {color: {type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-              colorStops: [{offset: 0, color: '#8b5cf6'}, {offset: 1, color: '#6366f1'}]}}},
-          {name: '节省费用', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'circle', symbolSize: 4,
-            data: data.map(t => t.saved_cost), lineStyle: {color: '#10e0a0', width: 2},
-            itemStyle: {color: '#10e0a0'}},
-        ]});
-    } else {
-      chart.setOption({title: {text: '暂无缓存数据', left: 'center', top: 'middle', textStyle: CHART_TEXT}});
-    }
+    // 后端按小时补零,始终渲染完整小时轴;全零也画出 0 基线而不是"暂无数据"
+    chart.setOption({
+      tooltip: {trigger: 'axis', backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
+        textStyle: {color: '#d7e6ff', fontSize: 11}},
+      grid: {left: 10, right: 16, top: 30, bottom: 10, containLabel: true},
+      legend: {data: ['命中数', '节省费用'], textStyle: CHART_TEXT, top: 0, right: 0},
+      xAxis: {type: 'category', data: data.map(t => t.hour.slice(5, 16)), ...CHART_AXIS},
+      yAxis: [{type: 'value', ...CHART_AXIS, name: '命中数'},
+              {type: 'value', ...CHART_AXIS, splitLine: {show: false}, name: '费用'}],
+      series: [
+        {name: '命中数', type: 'bar', data: data.map(t => t.hits), barWidth: 10,
+          itemStyle: {color: {type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [{offset: 0, color: '#8b5cf6'}, {offset: 1, color: '#6366f1'}]}}},
+        {name: '节省费用', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'circle', symbolSize: 4,
+          data: data.map(t => t.saved_cost), lineStyle: {color: '#10e0a0', width: 2},
+          itemStyle: {color: '#10e0a0'}},
+      ]});
   },
 };

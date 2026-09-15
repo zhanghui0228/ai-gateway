@@ -418,10 +418,16 @@ class ResponseCache:
                              .filter(CallLog.cache_hit == 0,
                                      CallLog.success == 1)
                              .with_entities(func.count(CallLog.id)).scalar()) or 0)
+            # 命中节省的 tokens:命中回放的入/出 tokens 之和(零转发部分)
+            db_hit_tokens = int((CallLog.query
+                                 .filter(CallLog.cache_hit == 1)
+                                 .with_entities(func.coalesce(func.sum(CallLog.total_tokens), 0))
+                                 .scalar()) or 0)
             total = db_hits + db_misses
             return {
                 "hits": db_hits, "misses": db_misses,
                 "hit_rate": round(db_hits / total * 100, 1) if total else 0.0,
+                "hit_tokens": db_hit_tokens,
                 "memory_hits": self._hits, "memory_misses": self._misses,
                 "memory_hit_rate": mem_hit_rate,
                 "memory_entries": mem_size,
@@ -434,6 +440,7 @@ class ResponseCache:
             return {
                 "hits": hits, "misses": misses,
                 "hit_rate": mem_hit_rate,
+                "hit_tokens": 0,
                 "memory_hits": hits, "memory_misses": misses,
                 "memory_hit_rate": mem_hit_rate,
                 "memory_entries": mem_size,
@@ -454,10 +461,21 @@ class ResponseCache:
                     func.count(CacheEvent.id),
                     func.coalesce(func.sum(CacheEvent.saved_cost), 0))
                 .filter(CacheEvent.created_at >= start)
-                .group_by(bj_hour)
-                .order_by(bj_hour)
-                .all())
-        return [{"hour": r[0], "hits": r[1], "saved_cost": round(float(r[2]), 4)} for r in rows]
+        .group_by(bj_hour)
+        .order_by(bj_hour)
+        .all())
+        data = {r[0]: {"hits": r[1], "saved_cost": round(float(r[2]), 4)} for r in rows}
+        # 零值填充:按小时生成从 start 到 now 的完整序列(与 stats.hourly_trend 口径一致),
+        # 前端始终拿到连续的小时轴,无数据的小时展示为 0 而不是隐藏
+        result = []
+        for i in range(hours, -1, -1):
+            t = _now() - timedelta(hours=i)
+            key = (t + timedelta(hours=8)).strftime("%Y-%m-%dT%H:00")
+            if key in data:
+                result.append({"hour": key, **data[key]})
+            else:
+                result.append({"hour": key, "hits": 0, "saved_cost": 0.0})
+        return result
 
     def recent_hits(self, limit=50) -> list:
         """最近缓存命中记录"""

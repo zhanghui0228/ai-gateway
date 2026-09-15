@@ -116,22 +116,33 @@ async function refreshAll() {
     flashNum($('#k-cost'), fmtCost(ov.cost));
     flashNum($('#k-chans'), `${ov.online_channels}/${ov.total_channels}`);
 
-    /* 趋势 */
+    /* 趋势:缺时补齐(后端未返回的小时按 0 计),保持 24 小时连续 */
+    const pad0 = x => String(x).padStart(2, '0');
+    const trendMap = {};
+    (trend || []).forEach(t => { if (t && t.hour) trendMap[t.hour] = t; });
+    const nowBJ = new Date(Date.now() + 8 * 3600e3);
+    const trendArr = [];
+    for (let i = 23; i >= 0; i--) {
+      const d = new Date(nowBJ.getTime() - i * 3600e3);
+      const key = `${d.getFullYear()}-${pad0(d.getMonth() + 1)}-${pad0(d.getDate())}T${pad0(d.getHours())}:00`;
+      const t = trendMap[key] || {hour: key, calls: 0, tokens: 0};
+      trendArr.push(t);
+    }
     chart('trend24').setOption({
       tooltip: {trigger: 'axis', backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
         textStyle: {color: '#d7e6ff', fontSize: 11}},
       grid: {left: 10, right: 16, top: 26, bottom: 6, containLabel: true},
       legend: {data: ['调用', 'Tokens'], textStyle: CHART_TEXT, top: 0, right: 0, itemWidth: 12, itemHeight: 8},
-      xAxis: {type: 'category', data: trend.map(t => t.hour.slice(11)), ...CHART_AXIS, boundaryGap: false},
+      xAxis: {type: 'category', data: trendArr.map(t => t.hour.slice(11)), ...CHART_AXIS, boundaryGap: false},
       yAxis: [{type: 'value', ...CHART_AXIS, splitLine: {lineStyle: {color: 'rgba(0,229,255,.08)'}}},
               {type: 'value', ...CHART_AXIS, splitLine: {show: false}}],
       series: [
-        {name: '调用', type: 'line', smooth: true, symbol: 'none', data: trend.map(t => t.calls),
+        {name: '调用', type: 'line', smooth: true, symbol: 'none', data: trendArr.map(t => t.calls),
           lineStyle: {color: '#3b82f6', width: 2},
           areaStyle: {color: {type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
             colorStops: [{offset: 0, color: 'rgba(59,130,246,.3)'}, {offset: 1, color: 'rgba(59,130,246,0)'}]}}},
         {name: 'Tokens', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'none',
-          data: trend.map(t => t.tokens), lineStyle: {color: '#00e5ff', width: 2},
+          data: trendArr.map(t => t.tokens), lineStyle: {color: '#00e5ff', width: 2},
           areaStyle: {color: {type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
             colorStops: [{offset: 0, color: 'rgba(0,229,255,.25)'}, {offset: 1, color: 'rgba(0,229,255,0)'}]}}},
       ]}, true);
@@ -163,12 +174,14 @@ async function refreshAll() {
         : `<div class="empty-tip">暂无数据</div>`;
     }
 
-    /* 调用时段热力图(周 x 24h) */
+    /* 调用时段热力图(周 x 24h),0 值也占位显示 */
     const days = ['一', '二', '三', '四', '五', '六', '日'];
     const hmData = [];
     let maxV = 0;
     (heat || []).forEach((row, di) => (row || []).forEach((v, hi) => {
-      if (v) { hmData.push([hi, di, v]); maxV = Math.max(maxV, v); }
+      const val = Number(v) || 0;
+      hmData.push([hi, di, val]);
+      maxV = Math.max(maxV, val);
     }));
     chart('heat24').setOption({
       tooltip: {backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
@@ -179,7 +192,7 @@ async function refreshAll() {
       yAxis: {type: 'category', data: days.map(d => '周' + d), ...CHART_AXIS},
       visualMap: {min: 0, max: Math.max(1, maxV), orient: 'horizontal', left: 'center', bottom: 0,
         itemWidth: 9, itemHeight: 70, textStyle: CHART_TEXT,
-        inRange: {color: ['rgba(13,22,44,0.5)', '#3b82f6', '#00e5ff', '#10e0a0']}},
+        inRange: {color: ['#0d1630', '#3b82f6', '#00e5ff', '#10e0a0']}},
       series: [{type: 'heatmap', data: hmData,
         itemStyle: {borderColor: '#060b18', borderWidth: 1, borderRadius: 2}}]}, true);
 

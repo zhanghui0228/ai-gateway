@@ -218,13 +218,14 @@ def relay_request(app, api_key_row, model, kind, openai_body):
     return _relay_one(app, api_key_row, model, kind, openai_body)
 
 
-def _serve_cached(cached, ctx, model, kind, started, cache_key, api_key_row):
-    """构造缓存命中响应: 返回缓存的响应体,记录日志(cost=0)"""
+def _serve_cached(cached, ctx, model, kind, started, cache_key, api_key_row, channel=None):
+    """构造缓存命中响应: 返回缓存的响应体,记录日志(cost=0)。
+    channel 为原写入渠道(缓存按渠道隔离),仅用于日志展示,命中本身零转发。"""
     latency_ms = int((time.time() - started) * 1000)
     resp_body = cached.response_body
-    # 记录 CallLog(标记 cache_hit=True, cost=0)
+    # 记录 CallLog(标记 cache_hit=True, cost=0, 渠道为原写入渠道供展示)
     _finish_success(
-        api_key_row=api_key_row, channel=None, model=model,
+        api_key_row=api_key_row, channel=channel, model=model,
         pt=cached.prompt_tokens, ct=cached.completion_tokens,
         total=cached.prompt_tokens + cached.completion_tokens,
         cost=0.0, latency_ms=latency_ms, is_stream=False,
@@ -246,12 +247,13 @@ def _serve_cached(cached, ctx, model, kind, started, cache_key, api_key_row):
                     headers={"X-Cache": "HIT", "X-Request-Id": ctx.get("request_id", "")})
 
 
-def _serve_cached_stream(cached, ctx, model, kind, started, cache_key, api_key_row):
-    """构造流式缓存命中响应: 逐个 yield 缓存的 SSE chunks,记录日志(cost=0)"""
+def _serve_cached_stream(cached, ctx, model, kind, started, cache_key, api_key_row, channel=None):
+    """构造流式缓存命中响应: 逐个 yield 缓存的 SSE chunks,记录日志(cost=0)。
+    channel 为原写入渠道(缓存按渠道隔离),仅用于日志展示,命中本身零转发。"""
     latency_ms = int((time.time() - started) * 1000)
-    # 记录 CallLog(标记 cache_hit=True, cost=0, is_stream=True)
+    # 记录 CallLog(标记 cache_hit=True, cost=0, is_stream=True, 渠道为原写入渠道供展示)
     _finish_success(
-        api_key_row=api_key_row, channel=None, model=model,
+        api_key_row=api_key_row, channel=channel, model=model,
         pt=cached.prompt_tokens, ct=cached.completion_tokens,
         total=cached.prompt_tokens + cached.completion_tokens,
         cost=0.0, latency_ms=latency_ms, is_stream=True,
@@ -349,8 +351,8 @@ def _relay_one(app, api_key_row, model, kind, openai_body, deadline=None, per_ti
                 miss_counted = True
             if cached:
                 if stream:
-                    return _serve_cached_stream(cached, ctx, model, kind, started, channel_cache_key, api_key_row)
-                return _serve_cached(cached, ctx, model, kind, started, channel_cache_key, api_key_row)
+                    return _serve_cached_stream(cached, ctx, model, kind, started, channel_cache_key, api_key_row, channel)
+                return _serve_cached(cached, ctx, model, kind, started, channel_cache_key, api_key_row, channel)
 
         adapter = get_adapter(channel.adapter)
         upstream_model = channel.real_model(model)
@@ -580,6 +582,7 @@ def _finish_success(api_key_row, channel, model, pt, ct, total, cost,
             channel_id=channel.id if channel else None, channel_name=channel.name if channel else "",
             model=model, prompt_tokens=pt, completion_tokens=ct, total_tokens=total, cost=cost,
             cache_read_tokens=cache_read, cache_creation_tokens=cache_creation,
+            cache_hit=cache_hit,
             latency_ms=latency_ms, status_code=200, success=True, is_stream=is_stream,
             estimated=estimated, retries=attempt, error="")
     ctx = ctx or {}

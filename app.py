@@ -24,7 +24,8 @@ def _migrate_columns(app):
                          ("extra_headers", "TEXT"), ("custom_fields", "TEXT"),
                          ("model_status", "TEXT"), ("tier", "INTEGER")],
             "model_prices": [("context_window", "INTEGER"), ("max_output", "INTEGER")],
-            "usage_logs": [("cache_read_tokens", "BIGINT"), ("cache_creation_tokens", "BIGINT")],
+            "usage_logs": [("cache_read_tokens", "BIGINT"), ("cache_creation_tokens", "BIGINT"),
+                         ("cache_hit", "BOOLEAN")],
             "call_logs": [("cache_hit", "BOOLEAN")],
             "response_cache": [("chunks", "TEXT")],
         }

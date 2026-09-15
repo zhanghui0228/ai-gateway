@@ -287,6 +287,7 @@ class UsageLog(db.Model):
     total_tokens = db.Column(db.BigInteger, default=0)
     cache_read_tokens = db.Column(db.BigInteger, default=0)       # 命中缓存 tokens
     cache_creation_tokens = db.Column(db.BigInteger, default=0)   # 写入缓存 tokens
+    cache_hit = db.Column(db.Boolean, default=False)               # 是否命中网关响应缓存(零转发零费用)
     cost = db.Column(db.Float, default=0.0)
     latency_ms = db.Column(db.Integer, default=0)
     status_code = db.Column(db.Integer, default=0)
@@ -294,6 +295,7 @@ class UsageLog(db.Model):
     is_stream = db.Column(db.Boolean, default=False)
     estimated = db.Column(db.Boolean, default=False)          # usage 为估算
     retries = db.Column(db.Integer, default=0)                # 故障转移次数
+    cache_hit = db.Column(db.Boolean, default=False, index=True)  # 是否命中网关响应缓存
     error = db.Column(db.String(512), default="")
 
     def to_dict(self):
@@ -305,6 +307,7 @@ class UsageLog(db.Model):
             "completion_tokens": self.completion_tokens, "total_tokens": self.total_tokens,
             "cache_read_tokens": self.cache_read_tokens,
             "cache_creation_tokens": self.cache_creation_tokens,
+            "cache_hit": self.cache_hit,
             "cost": self.cost, "latency_ms": self.latency_ms,
             "status_code": self.status_code, "success": self.success,
             "is_stream": self.is_stream, "estimated": self.estimated,
