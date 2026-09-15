@@ -183,10 +183,73 @@ def _set_result(ok=False, error=None, **extra):
     return res
 
 
+# ---------- 依赖管理 ----------
+def _requirements_changed(old_head):
+    """对比 old_head..HEAD 间 requirements.txt 是否有变更,返回 (是否变更, 新内容行)"""
+    ok, out = _run([GIT, "diff", "--name-only", old_head, "HEAD"], timeout=30)
+    if not ok:
+        return False, []
+    changed = "requirements.txt" in (out or "").splitlines()
+    if not changed:
+        return False, []
+    ok2, content = _run([GIT, "show", "HEAD:requirements.txt"], timeout=30)
+    lines = [l.strip() for l in (content or "").splitlines()
+             if l.strip() and not l.strip().startswith("#")]
+    return True, lines
+
+
+def _install_requirements(timeout=300):
+    """pip 安装 requirements.txt(参数列表执行,不经 shell),返回 step dict"""
+    return _step([sys.executable, "-m", "pip", "install", "--no-cache-dir",
+                  "-r", "requirements.txt"], timeout=timeout, cwd=config.BASE_DIR)
+
+
+def _find_missing_modules(stderr_text):
+    """从 import 错误信息中提取缺失的第三方模块名(用于提示用户)"""
+    m = re.search(r"ModuleNotFoundError: No module named '([^']+)'", stderr_text or "")
+    if m:
+        return [m.group(1)]
+    return []
+
+
+def _rollback(old_head, steps, note, restore_stash=True):
+    """依赖安装/import 预检失败时:回退到更新前代码,并(可选)恢复本地改动,
+    避免把服务留在「代码已更新但起不来」的中间态。"""
+    if old_head:
+        r = _step([GIT, "reset", "--hard", old_head], timeout=60)
+        steps.append(r)
+        if restore_stash:
+            steps.append(_step([GIT, "stash", "pop"], timeout=60))
+    _apply_result(ok=False,
+                  message=note + "。已自动回退到更新前代码,服务保持旧版本可用,"
+                          "请检查 pip 网络/权限后重试更新。",
+                  steps=steps)
+
+
+def _precheck_import(timeout=120):
+    """合并后、重启前:在独立子进程中 import app(不占用端口、不影响当前服务)。
+    缺第三方模块或新代码 import 期报错时返回 (False, 错误输出),用于避免重启后服务起不来。
+    注意:会短暂执行 create_app()(建表/迁移/加载缓存),幂等操作,不影响当前服务。"""
+    code = "import app"
+    try:
+        p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=timeout,
+                          cwd=config.BASE_DIR)
+        if p.returncode == 0:
+            return True, ""
+        return False, (p.stderr or p.stdout or f"exit={p.returncode}").strip()
+    except subprocess.TimeoutExpired:
+        return False, "import 预检超时(超过 %ss),未验证" % timeout
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)
+
+
 # ---------- 一键更新 ----------
 def apply_update(settings):
     """一键更新(阻塞,请放到后台线程执行)。settings 需含 repo / fallback_repo / branch / mode / auto_restart
-    按顺序尝试各更新源节点:主源不可达时自动切换备用源;记录实际使用的节点 used_repo"""
+    按顺序尝试各更新源节点:主源不可达时自动切换备用源;记录实际使用的节点 used_repo。
+    requirements.txt 有变更时自动 pip install,并在重启前做 import 预检;
+    失败时自动回退代码,避免留下起不来的服务。"""
     mode = (settings.get("mode") or "direct").strip().lower()
     branch = (settings.get("branch") or "").strip()
     used_repo = None
@@ -213,10 +276,12 @@ def apply_update(settings):
                 errs.append("%s: %s" % (repo, st["err"]))
                 continue
 
+            # 记录合并前的 HEAD,供依赖安装/预检失败时回滚
+            ok, old_head = _run([GIT, "rev-parse", "HEAD"], timeout=30)
+            old_head = old_head.strip() if ok else ""
+
             # 合并前先暂存本地未提交改动(容器部署时 COPY 可能带入宿主机脏文件,
-            # 直接 merge 会被 git 拒绝);合并成功丢弃暂存,失败则恢复保留本地改动
-            ok, before = _run([GIT, "stash", "list"], timeout=30)
-            stash_n = len([l for l in (before or "").splitlines() if l.strip()]) if ok else 0
+            # 直接 merge 会被 git 拒绝);暂存保留到依赖步骤完成后再决定是否丢弃
             st = _step(["git", "stash", "--include-untracked"], timeout=60)
             steps.append(st)
             if not st["ok"]:
@@ -231,11 +296,7 @@ def apply_update(settings):
                 return _apply_result(ok=False,
                                      message="合并失败(快进合并无法完成,可能本地有分叉提交): " + st["err"],
                                      steps=steps)
-            # 快进成功: 本地改动已被新版覆盖或冲突,丢弃本次创建的暂存
-            ok, after = _run([GIT, "stash", "list"], timeout=30)
-            stash_n_after = len([l for l in (after or "").splitlines() if l.strip()]) if ok else 0
-            if stash_n_after > stash_n:
-                _step([GIT, "stash", "drop", "stash@{%d}" % (stash_n_after - 1)], timeout=30)
+            # 快进成功;暂存保留,待 direct 模式依赖步骤通过后再丢弃
             used_repo = repo
             break
         if used_repo is None:
@@ -243,11 +304,21 @@ def apply_update(settings):
             return _apply_result(ok=False, message="所有更新源均不可达(拉取失败): " + tail, steps=steps)
 
         if mode == "docker":
+            # Docker 重建会重跑 Dockerfile 内的 pip install,依赖由构建自动处理
+            reqs_changed, _ = _requirements_changed(old_head)
+            # 丢弃合并前创建的暂存(容器场景本地改动已无意义)
+            _drop_newest_stash()
             if not settings.get("auto_restart"):
-                return _apply_result(ok=True, message="代码已更新;已按设置跳过容器重建,请手动执行 docker compose up -d --build",
-                                     steps=steps)
+                hint = (";依赖(requirements.txt)已变更,跳过重建后需手动执行 "
+                        "docker compose up -d --build 使依赖生效"
+                        if reqs_changed else "")
+                return _apply_result(ok=True,
+                                     message="代码已更新;已按设置跳过容器重建,请手动执行 "
+                                             "docker compose up -d --build" + hint,
+                                     steps=steps, used_repo=used_repo)
             if not _find_compose():
-                return _apply_result(ok=False, message="未找到 docker-compose.yml / compose.yml,无法以 Docker 方式重建",
+                return _apply_result(ok=False,
+                                     message="未找到 docker-compose.yml / compose.yml,无法以 Docker 方式重建",
                                      steps=steps)
             st = _step(["docker", "compose", "up", "-d", "--build"],
                        cwd=config.BASE_DIR, timeout=600)
@@ -256,7 +327,26 @@ def apply_update(settings):
                 return _apply_result(ok=False, message="Docker 重建失败: " + st["err"], steps=steps)
             return _apply_result(ok=True, message="代码与容器均已更新完成", steps=steps, used_repo=used_repo)
 
-        # direct 模式
+        # ---- direct 模式:依赖同步 + import 预检(失败自动回滚,避免留下起不来的服务) ----
+        reqs_changed, _ = _requirements_changed(old_head)
+        if reqs_changed:
+            st = _install_requirements()
+            steps.append(st)
+            if not st["ok"]:
+                return _rollback(old_head, steps,
+                                 "依赖安装失败: " + st["err"])
+            # import 预检:重启前确认新代码 + 新依赖可用(子进程,不影响当前服务)
+            okc, cerr = _precheck_import()
+            if not okc:
+                missing = _find_missing_modules(cerr)
+                hint = ("缺失模块: %s" % ", ".join(missing)) if missing else ""
+                note = "依赖预检失败(%s): %s" % (hint, (cerr or "")[:300]) if cerr \
+                    else "依赖预检失败"
+                return _rollback(old_head, steps, note)
+        # 依赖步骤全部通过(或未涉及依赖变更),丢弃合并前暂存的本地改动
+        _drop_newest_stash()
+
+        # direct 模式:重启
         if not settings.get("auto_restart"):
             return _apply_result(ok=True, message="代码已更新;已按设置跳过自动重启,请手动重启服务使新代码生效",
                                  steps=steps)
@@ -288,6 +378,15 @@ def _step(cmd, timeout=60, cwd=None):
     ok, out = _run(cmd, timeout=timeout, cwd=cwd)
     return {"name": cmd[0], "cmd": " ".join(cmd),
             "ok": ok, "out": out if ok else "", "err": "" if ok else out}
+
+
+def _drop_newest_stash():
+    """丢弃最近一次 git stash 创建(即合并前暂存的本地改动)。
+    更新完成后本地改动已被新版覆盖,不再需要保留。"""
+    ok, lst = _run([GIT, "stash", "list"], timeout=30)
+    n = len([l for l in (lst or "").splitlines() if l.strip()]) if ok else 0
+    if n > 0:
+        _run([GIT, "stash", "drop", "stash@{0}"], timeout=30)
 
 
 def _find_compose():

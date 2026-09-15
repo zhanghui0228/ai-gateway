@@ -1255,8 +1255,19 @@ Pages.settings = {
       ab.innerHTML = `<div style="font-size:12px;margin-top:4px">最近更新: ${fmtD((a.finished_at || a.started_at || 0) * 1000)}
         <span style="color:${a.ok ? '#4ade80' : '#ff5f6d'}">${a.ok ? '成功' : '失败'}</span>
         — ${esc(a.message)}</div>
-        ${(a.steps || []).map(x => `<div class="mono" style="font-size:11px;color:${x.ok ? '#4ade80' : '#ff5f6d'};margin-top:2px">
-          ${esc(x.ok ? '✔' : '✘')} ${esc(x.cmd)}${x.err ? ' — ' + esc(x.err) : ''}</div>`).join('')}`;
+        ${(a.steps || []).map(x => {
+          const cmd = x.cmd || '';
+          const label = /pip.*install/.test(cmd) ? 'pip install(依赖同步)'
+            : /git.*merge/.test(cmd) ? 'git merge(代码合并)'
+            : /git.*reset.*hard/.test(cmd) ? 'git reset(回退代码)'
+            : /git.*stash.*pop/.test(cmd) ? 'git stash pop(恢复本地改动)'
+            : /git.*stash.*drop/.test(cmd) ? 'git stash drop(清理暂存)'
+            : /git.*fetch/.test(cmd) ? 'git fetch(拉取远端)'
+            : /docker.*compose/.test(cmd) ? 'docker compose(重建容器)'
+            : cmd;
+          return `<div class="mono" style="font-size:11px;color:${x.ok ? '#4ade80' : '#ff5f6d'};margin-top:2px">
+            ${esc(x.ok ? '✔' : '✘')} ${esc(label)}${x.err ? ' — ' + esc(x.err.slice(0, 200)) : ''}</div>`;
+        }).join('')}`;
     }
     this.applyButtonState(st);
   },
@@ -1287,11 +1298,14 @@ Pages.settings = {
     this.refreshUpdateStatus();
   },
   async confirmApply() {
+    const isDocker = $('#s-up-mode').value === 'docker';
     openModal('确认一键更新', `
       <div style="font-size:13px;line-height:1.9">
         <p>将拉取更新源仓库的最新代码并合并到本地,<b>更新期间服务可能出现短暂中断</b>。</p>
-        <p>执行方式: <span class="mono">${esc($('#s-up-mode').value === 'docker' ? 'docker compose up -d --build' : 'git pull + 自动重启服务')}</span></p>
-        <p class="hint">Docker 方式会重建容器;直接运行方式会重启当前服务进程(页面会短暂无法访问)。</p>
+        <p>执行方式: <span class="mono">${isDocker ? 'docker compose up -d --build(自动处理依赖)' : 'git pull + 自动重启服务'}</span></p>
+        <p class="hint">${isDocker
+          ? 'Docker 方式会重建容器,Dockerfile 内的 pip install 会自动同步 requirements.txt 依赖。'
+          : '直接运行方式:合并代码后,若 requirements.txt 有变更会自动 pip install 并做 import 预检;预检失败自动回退到更新前代码,不会留下起不来的服务。重启时页面会短暂无法访问。'}</p>
       </div>`,
       `<button class="btn ghost" style="margin-right:8px" onclick="closeModal()">取消</button>
        <button class="btn danger" id="btn-confirm-up">确认更新</button>`);
