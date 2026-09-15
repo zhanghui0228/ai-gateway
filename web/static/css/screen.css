@@ -51,7 +51,7 @@
 .sp-title::before { content: ""; width: 4px; height: 14px; background: var(--cyan);
   box-shadow: 0 0 8px var(--cyan); }
 .sp-panel { display: flex; flex-direction: column; min-height: 0; }
-.sp-body { flex: 1; min-height: 0; padding: 0 12px 12px; }
+.sp-body { flex: 1; min-height: 0; padding: 0 12px 12px; display: flex; flex-direction: column; }
 
 /* 实时流水 */
 .feed-panel { grid-column: 2; grid-row: 2; }
@@ -90,5 +90,6 @@
 .rank-bar { height: 3px; border-radius: 2px; margin-top: 3px;
   background: linear-gradient(90deg, var(--cyan), var(--purple)); }
 
-#pie-model { height: 240px; }
+#pie-model { flex: 1; min-height: 0; }
+#heat24 { flex: 1; min-height: 0; }
 #trend24 { flex: 1; min-height: 0; }
