@@ -63,7 +63,7 @@
 .page-head .actions { display: flex; gap: 10px; }
 
 /* 指标卡 */
-.stat-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-bottom: 18px; }
+.stat-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; margin-bottom: 18px; }
 .stat-card { padding: 16px 18px; }
 .stat-card .label { font-size: 12px; color: var(--text-dim); margin-bottom: 8px; display: flex; justify-content: space-between; }
 .stat-card .value { font-size: 26px; font-weight: 700; font-family: var(--mono); }

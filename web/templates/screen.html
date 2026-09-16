@@ -38,6 +38,8 @@
         <div class="label">今日费用</div><div class="value g" id="k-cost-today">¥0</div></div>
       <div class="panel kpi"><span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
         <div class="label">在线渠道</div><div class="value" id="k-chans">0/0</div></div>
+      <div class="panel kpi"><span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
+        <div class="label">平均延迟</div><div class="value a" id="k-latency">0ms</div></div>
     </div>
 
     <!-- 左列:渠道健康 + Key 消耗排行 -->
@@ -112,12 +114,13 @@ async function refreshAll() {
   try { heat = await api('/admin/api/stats/hourly_heatmap?days=7'); } catch (e) { heat = []; }
 
   try {
-    flashNum($('#k-calls'), ov.total_calls);
-    flashNum($('#k-rate'), ov.success_rate + '%');
-    flashNum($('#k-tokens'), fmtTokens(ov.today_tokens));
-    flashNum($('#k-cost'), fmtCost(ov.cost));
-    flashNum($('#k-cost-today'), fmtCost(ov.today_cost));
-    flashNum($('#k-chans'), `${ov.online_channels}/${ov.total_channels}`);
+    flashNum($('#k-calls'), ov.total_calls ?? 0);
+    flashNum($('#k-rate'), (ov.success_rate ?? 100) + '%');
+    flashNum($('#k-tokens'), fmtTokens(ov.today_tokens ?? 0));
+    flashNum($('#k-cost'), fmtCost(ov.cost ?? 0));
+    flashNum($('#k-cost-today'), fmtCost(ov.today_cost ?? 0));
+    flashNum($('#k-chans'), `${ov.online_channels ?? 0}/${ov.total_channels ?? 0}`);
+    flashNum($('#k-latency'), fmtMs(ov.avg_latency_ms ?? 0));
 
     /* 趋势:缺时补齐(后端未返回的小时按 0 计),保持 24 小时连续 */
     const pad0 = x => String(x).padStart(2, '0');

@@ -2083,9 +2083,10 @@ Pages.dashboard = {
     try { byModel = await api('/admin/api/stats/by_model?days=7'); } catch (e) { byModel = []; }
     try { daily = await api('/admin/api/stats/daily?days=14'); } catch (e) { daily = {}; }
     $('#d-stats').innerHTML = [
-      ['今日调用', ov.total_calls, 'cyan'], ['今日 Tokens', fmtTokens(ov.today_tokens), 'purple'],
-      ['今日费用', fmtCost(ov.today_cost), 'amber'], ['平均延迟', fmtMs(ov.avg_latency_ms), 'amber'],
-      ['在线渠道', `${ov.online_channels} / ${ov.total_channels}`, 'green'],
+      ['今日调用', ov.total_calls ?? 0, 'cyan'], ['成功率', (ov.success_rate ?? 100) + '%', 'green'],
+      ['今日 Tokens', fmtTokens(ov.today_tokens ?? 0), 'purple'], ['今日费用', fmtCost(ov.today_cost ?? 0), 'amber'],
+      ['平均延迟', fmtMs(ov.avg_latency_ms ?? 0), 'amber'],
+      ['在线渠道', `${ov.online_channels ?? 0} / ${ov.total_channels ?? 0}`, 'green'],
     ].map(([l, v, c]) => `<div class="panel stat-card">
       <div class="label"><span>${l}</span></div><div class="value ${c}">${v}</div></div>`).join('');
     disposeCharts();
