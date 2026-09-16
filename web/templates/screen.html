@@ -35,6 +35,8 @@
       <div class="panel kpi"><span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
         <div class="label">总费用</div><div class="value a" id="k-cost">¥0</div></div>
       <div class="panel kpi"><span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
+        <div class="label">今日费用</div><div class="value g" id="k-cost-today">¥0</div></div>
+      <div class="panel kpi"><span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
         <div class="label">在线渠道</div><div class="value" id="k-chans">0/0</div></div>
     </div>
 
@@ -114,6 +116,7 @@ async function refreshAll() {
     flashNum($('#k-rate'), ov.success_rate + '%');
     flashNum($('#k-tokens'), fmtTokens(ov.today_tokens));
     flashNum($('#k-cost'), fmtCost(ov.cost));
+    flashNum($('#k-cost-today'), fmtCost(ov.today_cost));
     flashNum($('#k-chans'), `${ov.online_channels}/${ov.total_channels}`);
 
     /* 趋势:缺时补齐(后端未返回的小时按 0 计),保持 24 小时连续 */
@@ -174,24 +177,25 @@ async function refreshAll() {
         : `<div class="empty-tip">暂无数据</div>`;
     }
 
-    /* 调用时段热力图(周 x 24h),0 值也占位显示 */
+    /* 调用时段热力图(周 x 24h),0 值也占位显示;横轴=星期,纵轴=小时 */
     const days = ['一', '二', '三', '四', '五', '六', '日'];
+    const hours = Array.from({length: 24}, (_, i) => String(i).padStart(2, '0'));
     const hmData = [];
     let maxV = 0;
     (heat || []).forEach((row, di) => (row || []).forEach((v, hi) => {
       const val = Number(v) || 0;
-      hmData.push([hi, di, val]);
+      hmData.push([di, hi, val]);
       maxV = Math.max(maxV, val);
     }));
     chart('heat24').setOption({
       tooltip: {backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
         textStyle: {color: '#d7e6ff', fontSize: 11},
-        formatter: p => `周${days[p.data[1]]} ${String(p.data[0]).padStart(2, '0')}:00<br/>调用 ${p.data[2]} 次`},
-      grid: {left: 10, right: 12, top: 8, bottom: 36, containLabel: true},
-      xAxis: {type: 'category', data: Array.from({length: 24}, (_, i) => String(i).padStart(2, '0')), ...CHART_AXIS},
-      yAxis: {type: 'category', data: days.map(d => '周' + d), ...CHART_AXIS},
-      visualMap: {min: 0, max: Math.max(1, maxV), orient: 'horizontal', left: 'center', bottom: 0,
-        itemWidth: 9, itemHeight: 70, textStyle: CHART_TEXT,
+        formatter: p => `周${days[p.data[0]]} ${p.data[1]}:00<br/>调用 ${p.data[2]} 次`},
+      grid: {left: 34, right: 12, top: 8, bottom: 36, containLabel: true},
+      xAxis: {type: 'category', data: days.map(d => '周' + d), ...CHART_AXIS},
+      yAxis: {type: 'category', data: hours, ...CHART_AXIS, inverse: true, axisLabel: {...CHART_TEXT, interval: 3}},
+      visualMap: {min: 0, max: Math.max(1, maxV), orient: 'vertical', right: 0, top: 'center',
+        itemWidth: 9, itemHeight: 90, textStyle: CHART_TEXT,
         inRange: {color: ['#0d1630', '#3b82f6', '#00e5ff', '#10e0a0']}},
       series: [{type: 'heatmap', data: hmData,
         itemStyle: {borderColor: '#060b18', borderWidth: 1, borderRadius: 2}}]}, true);

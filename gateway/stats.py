@@ -42,11 +42,15 @@ def overview(days=1):
     today_tokens = db.session.query(
         func.coalesce(func.sum(UsageLog.total_tokens), 0)).filter(
         UsageLog.created_at >= today0).scalar()
+    today_cost = db.session.query(
+        func.coalesce(func.sum(UsageLog.cost), 0)).filter(
+        UsageLog.created_at >= today0).scalar()
     return {
         "total_calls": total, "success_calls": success,
         "success_rate": round(success / total * 100, 1) if total else 100.0,
         "total_tokens": int(total_tokens), "today_tokens": int(today_tokens),
-        "cost": round(float(cost), 4), "avg_latency_ms": int(avg_latency),
+        "cost": round(float(cost), 4), "today_cost": round(float(today_cost), 4),
+        "avg_latency_ms": int(avg_latency),
         "online_channels": online, "total_channels": channels,
     }
 

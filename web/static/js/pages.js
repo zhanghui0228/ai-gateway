@@ -749,7 +749,7 @@ Pages.usage = {
       </div>
       <div class="panel chart-panel" style="margin-bottom:18px">
         <h3>调用时段热点 · 近7天(周 × 24小时,颜色越亮调用越集中)</h3>
-        <div id="u-heat" style="height:260px"></div>
+        <div id="u-heat" style="height:340px"></div>
       </div>
       <div class="panel" style="padding:6px 10px;margin-bottom:18px">
         <div id="u-log-pagination" style="display:flex;align-items:center;gap:12px;margin-bottom:8px"></div>
@@ -799,23 +799,24 @@ Pages.usage = {
         itemStyle: {borderColor: '#060b18', borderWidth: 2}}]});
     const hmc = mkChart($('#u-heat'));
     const dlabels = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
-    // 完整 7x24 矩阵,0 值也占位
+    // 完整 7x24 矩阵,0 值也占位;横轴=星期,纵轴=小时
+    const uhours = Array.from({length: 24}, (_, i) => String(i).padStart(2, '0'));
     const hmData = [];
     let maxV = 0;
     (heat || []).forEach((row, di) => (row || []).forEach((v, hi) => {
       const val = Number(v) || 0;
-      hmData.push([hi, di, val]);
+      hmData.push([di, hi, val]);
       maxV = Math.max(maxV, val);
     }));
     hmc.setOption({
       tooltip: {backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
         textStyle: {color: '#d7e6ff', fontSize: 11},
-        formatter: p => `${dlabels[p.data[1]]} ${String(p.data[0]).padStart(2, '0')}:00<br/>调用 ${p.data[2]} 次`},
-      grid: {left: 10, right: 16, top: 10, bottom: 56, containLabel: true},
-      xAxis: {type: 'category', data: Array.from({length: 24}, (_, i) => String(i).padStart(2, '0')), ...CHART_AXIS},
-      yAxis: {type: 'category', data: dlabels, ...CHART_AXIS},
-      visualMap: {min: 0, max: Math.max(1, maxV), orient: 'horizontal', left: 'center', bottom: 0,
-        itemWidth: 10, itemHeight: 90, textStyle: CHART_TEXT,
+        formatter: p => `${dlabels[p.data[0]]} ${p.data[1]}:00<br/>调用 ${p.data[2]} 次`},
+      grid: {left: 44, right: 40, top: 10, bottom: 20, containLabel: true},
+      xAxis: {type: 'category', data: dlabels, ...CHART_AXIS},
+      yAxis: {type: 'category', data: uhours, ...CHART_AXIS, inverse: true, axisLabel: {...CHART_TEXT, interval: 1}},
+      visualMap: {min: 0, max: Math.max(1, maxV), orient: 'vertical', right: 0, top: 'center',
+        itemWidth: 10, itemHeight: 100, textStyle: CHART_TEXT,
         inRange: {color: ['#0d1630', '#3b82f6', '#00e5ff', '#10e0a0']}},
       series: [{type: 'heatmap', data: hmData,
         itemStyle: {borderColor: '#060b18', borderWidth: 1, borderRadius: 2},
@@ -1495,7 +1496,7 @@ Pages.dashboard = {
       </div>
       <div class="chart-flex" style="margin-top:18px">
         <div class="panel chart-panel"><h3>响应缓存命中趋势(24h · 零转发)</h3><div id="d-cache-trend" style="height:300px"></div></div>
-        <div class="panel chart-panel"><h3>调用时段热点(近7天 · 周x24h)</h3><div id="d-heat" style="height:300px"></div></div>
+        <div class="panel chart-panel"><h3>调用时段热点(近7天 · 周x24h)</h3><div id="d-heat" style="height:380px"></div></div>
       </div>`;
     await this.refresh();
   },
@@ -1510,7 +1511,8 @@ Pages.dashboard = {
     try { cacheTrend = await api('/admin/api/cache/trend?hours=24'); } catch (e) { cacheTrend = []; }
     $('#d-stats').innerHTML = [
       ['今日调用', ov.total_calls, 'cyan'], ['今日 Tokens', fmtTokens(ov.today_tokens), 'purple'],
-      ['平均延迟', fmtMs(ov.avg_latency_ms), 'amber'], ['在线渠道', `${ov.online_channels} / ${ov.total_channels}`, 'green'],
+      ['今日费用', fmtCost(ov.today_cost), 'amber'], ['平均延迟', fmtMs(ov.avg_latency_ms), 'amber'],
+      ['在线渠道', `${ov.online_channels} / ${ov.total_channels}`, 'green'],
     ].map(([l, v, c]) => `<div class="panel stat-card">
       <div class="label"><span>${l}</span></div><div class="value ${c}">${v}</div></div>`).join('');
     // 缓存 KPI — 网关响应缓存(累计 DB 口径,与厂商提示词缓存是两套机制)
@@ -1577,23 +1579,24 @@ Pages.dashboard = {
     /* 调用时段热力图(周 x 24h) */
     const hmc = mkChart($('#d-heat'));
     const days = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
-    // 完整 7x24 矩阵,0 值也占位(浅底块 + 深色描边区分,视觉上不消失)
+    // 完整 7x24 矩阵,0 值也占位(浅底块 + 深色描边区分,视觉上不消失);横轴=星期,纵轴=小时
+    const hours = Array.from({length: 24}, (_, i) => String(i).padStart(2, '0'));
     const hmData = [];
     let maxV = 0;
     (heat || []).forEach((row, di) => (row || []).forEach((v, hi) => {
       const val = Number(v) || 0;
-      hmData.push([hi, di, val]);
+      hmData.push([di, hi, val]);
       maxV = Math.max(maxV, val);
     }));
     hmc.setOption({
       tooltip: {backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
         textStyle: {color: '#d7e6ff', fontSize: 11},
-        formatter: p => `${days[p.data[1]]} ${String(p.data[0]).padStart(2, '0')}:00<br/>调用 ${p.data[2]} 次`},
-      grid: {left: 10, right: 14, top: 10, bottom: 40, containLabel: true},
-      xAxis: {type: 'category', data: Array.from({length: 24}, (_, i) => String(i).padStart(2, '0')), ...CHART_AXIS},
-      yAxis: {type: 'category', data: days, ...CHART_AXIS},
-      visualMap: {min: 0, max: Math.max(1, maxV), calculable: false, orient: 'horizontal',
-        left: 'center', bottom: 0, itemWidth: 10, itemHeight: 80,
+        formatter: p => `${days[p.data[0]]} ${p.data[1]}:00<br/>调用 ${p.data[2]} 次`},
+      grid: {left: 44, right: 40, top: 10, bottom: 20, containLabel: true},
+      xAxis: {type: 'category', data: days, ...CHART_AXIS},
+      yAxis: {type: 'category', data: hours, ...CHART_AXIS, inverse: true, axisLabel: {...CHART_TEXT, interval: 1}},
+      visualMap: {min: 0, max: Math.max(1, maxV), calculable: false, orient: 'vertical',
+        right: 0, top: 'center', itemWidth: 10, itemHeight: 90,
         textStyle: CHART_TEXT,
         inRange: {color: ['#0d1630', '#3b82f6', '#00e5ff', '#10e0a0']}},
       series: [{type: 'heatmap', data: hmData,
