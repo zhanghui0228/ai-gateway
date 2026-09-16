@@ -1490,41 +1490,766 @@ Pages.dashboard = {
           <button class="btn ghost" onclick="location.href='/docs'">接口文档</button>
           <button class="btn ghost" onclick="location.href='/screen'">打开大屏 →</button></div></div>
       <div class="stat-grid" id="d-stats"></div>
-      <div class="stat-grid" id="d-cache-stats" style="margin-top:12px"></div>
       <div class="chart-flex">
         <div class="panel chart-panel"><h3>24 小时调用趋势</h3><div id="d-trend" style="height:280px"></div></div>
         <div class="panel chart-panel"><h3>渠道健康(定时探测)</h3><div id="d-channels" style="height:280px;overflow-y:auto"></div></div>
       </div>
       <div class="chart-flex" style="margin-top:18px">
-        <div class="panel chart-panel"><h3>响应缓存命中趋势(24h · 零转发)</h3><div id="d-cache-trend" style="height:300px"></div></div>
         <div class="panel chart-panel"><h3>调用时段热点(近7天 · 周x24h)</h3><div id="d-heat" style="height:380px"></div></div>
       </div>`;
     await this.refresh();
   },
   async refresh() {
     // 独立请求:单个接口失败不影响其他渲染
-    let ov, trend, channels, heat, cacheSt, cacheTrend;
+    let ov, trend, channels, heat;
     try { ov = await api('/admin/api/stats/overview?days=1'); } catch (e) { ov = {}; }
     try { trend = await api('/admin/api/stats/trend?days=1'); } catch (e) { trend = []; }
     try { channels = await api('/admin/api/channels'); } catch (e) { channels = []; }
     try { heat = await api('/admin/api/stats/hourly_heatmap?days=7'); } catch (e) { heat = []; }
-    try { cacheSt = await api('/admin/api/cache/stats'); } catch (e) { cacheSt = {}; }
-    try { cacheTrend = await api('/admin/api/cache/trend?hours=24'); } catch (e) { cacheTrend = []; }
     $('#d-stats').innerHTML = [
       ['今日调用', ov.total_calls, 'cyan'], ['今日 Tokens', fmtTokens(ov.today_tokens), 'purple'],
       ['今日费用', fmtCost(ov.today_cost), 'amber'], ['平均延迟', fmtMs(ov.avg_latency_ms), 'amber'],
       ['在线渠道', `${ov.online_channels} / ${ov.total_channels}`, 'green'],
     ].map(([l, v, c]) => `<div class="panel stat-card">
       <div class="label"><span>${l}</span></div><div class="value ${c}">${v}</div></div>`).join('');
-    // 缓存 KPI — 网关响应缓存(累计 DB 口径,与厂商提示词缓存是两套机制)
-    $('#d-cache-stats').innerHTML = [
-      ['响应缓存命中', `${cacheSt.hits || 0} · ${fmtTokens(cacheSt.hit_tokens || 0)} tk`, 'purple'],
-      ['响应缓存命中率', (cacheSt.hit_rate || 0) + '%', 'green'],
-      ['厂商缓存读取', fmtTokens((cacheSt.upstream || {}).cache_read_tokens || 0), 'cyan'],
-      ['节省费用', '¥' + (cacheSt.total_saved_cost || 0).toFixed(2), 'amber'],
+    disposeCharts();
+    const cm = mkChart($('#c-model'));
+    const metric = this._modelMetric || 'tokens';
+    const sorted = [...byModel].sort((a, b) => (b[metric] || 0) - (a[metric] || 0));
+    cm.setOption({
+      tooltip: {trigger: 'axis', backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)', textStyle: {color: '#d7e6ff', fontSize: 11},
+        formatter: params => { const p = params[0]; return `${p.name}<br/>${metric === 'tokens' ? 'Tokens' : '调用次数'}: ${metric === 'tokens' ? fmtTokens(p.value) : p.value}`; }},
+      grid: {left: 10, right: 30, top: 10, bottom: 10, containLabel: true},
+      xAxis: {type: 'value', ...CHART_AXIS},
+      yAxis: {type: 'category', data: sorted.map(x => x.name).reverse(),
+        axisLabel: {...CHART_TEXT, width: 110, overflow: 'truncate'}},
+      series: [{type: 'bar', data: sorted.map(x => x[metric] || 0).reverse(),
+        itemStyle: {color: {type: 'linear', x: 0, y: 0, x2: 1, y2: 0,
+          colorStops: [{offset: 0, color: '#3b82f6'}, {offset: 1, color: '#00e5ff'}]}},
+        barWidth: 12}]});
+    const cc = mkChart($('#c-chan'));
+    cc.setOption({
+      tooltip: {trigger: 'item', backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)', textStyle: {color: '#d7e6ff', fontSize: 11}},
+      legend: {bottom: 0, textStyle: CHART_TEXT, itemWidth: 10, itemHeight: 10},
+      series: [{type: 'pie', radius: ['45%', '70%'], center: ['50%', '45%'],
+        data: byChan.map(x => ({name: x.name, value: x.calls})),
+        label: {color: '#6b83a8', fontSize: 11},
+        itemStyle: {borderColor: '#060b18', borderWidth: 2}}]});
+    const hmc = mkChart($('#u-heat'));
+    const dlabels = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+    // 完整 7x24 矩阵,0 值也占位;横轴=星期,纵轴=小时
+    const uhours = Array.from({length: 24}, (_, i) => String(i).padStart(2, '0'));
+    const hmData = [];
+    let maxV = 0;
+    (heat || []).forEach((row, di) => (row || []).forEach((v, hi) => {
+      const val = Number(v) || 0;
+      hmData.push([di, hi, val]);
+      maxV = Math.max(maxV, val);
+    }));
+    hmc.setOption({
+      tooltip: {backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
+        textStyle: {color: '#d7e6ff', fontSize: 11},
+        formatter: p => `${dlabels[p.data[0]]} ${p.data[1]}:00<br/>调用 ${p.data[2]} 次`},
+      grid: {left: 44, right: 40, top: 10, bottom: 20, containLabel: true},
+      xAxis: {type: 'category', data: dlabels, ...CHART_AXIS},
+      yAxis: {type: 'category', data: uhours, ...CHART_AXIS,
+        axisLabel: {...CHART_TEXT, interval: 1}},
+      visualMap: {min: 0, max: Math.max(1, maxV), orient: 'vertical', right: 0, top: 'center',
+        itemWidth: 10, itemHeight: 100, textStyle: CHART_TEXT,
+        inRange: {color: ['#0d1630', '#3b82f6', '#00e5ff', '#10e0a0']}},
+      series: [{type: 'heatmap', data: hmData,
+        itemStyle: {borderColor: '#060b18', borderWidth: 1, borderRadius: 2},
+        emphasis: {itemStyle: {shadowBlur: 8, shadowColor: 'rgba(0,229,255,.5)'}}}]});
+    /* 每日用量图:tokens 柱状 + 调用折线 + 模型数次折线 */
+    const dc = mkChart($('#u-daily'));
+    const dd = daily.daily || [];
+    if (dd.length) {
+      dc.setOption({
+        tooltip: {trigger: 'axis', backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
+          textStyle: {color: '#d7e6ff', fontSize: 11}},
+        grid: {left: 10, right: 14, top: 34, bottom: 10, containLabel: true},
+        legend: {data: ['Tokens', '缓存命中', '总调用', '模型数'], textStyle: CHART_TEXT,
+          top: 0, right: 0, itemWidth: 12, itemHeight: 8},
+        xAxis: {type: 'category', data: dd.map(x => x.date.slice(5)), ...CHART_AXIS},
+        yAxis: [{type: 'value', ...CHART_AXIS},
+                {type: 'value', ...CHART_AXIS, splitLine: {show: false}}],
+        series: [
+          {name: 'Tokens', type: 'bar', data: dd.map(x => x.total_tokens), barWidth: 12,
+            itemStyle: {color: {type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+              colorStops: [{offset: 0, color: '#00e5ff'}, {offset: 1, color: '#3b82f6'}]}}},
+          {name: '缓存命中', type: 'bar', data: dd.map(x => x.cache_tokens), barWidth: 12,
+            itemStyle: {color: '#8b5cf6'}},
+          {name: '总调用', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'circle', symbolSize: 5,
+            data: dd.map(x => x.calls), lineStyle: {color: '#10e0a0', width: 2},
+            itemStyle: {color: '#10e0a0'}},
+          {name: '模型数', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'none',
+            data: dd.map(x => x.models), lineStyle: {color: '#ffb020', width: 1.5, type: 'dashed'},
+            itemStyle: {color: '#ffb020'}},
+        ]});
+    } else {
+      dc.setOption({title: {text: '暂无数据', left: 'center', top: 'middle', textStyle: CHART_TEXT}});
+    }
+    this._dailyModelCalls = daily.model_calls || {};
+  },
+  async refresh() {
+    const days = $('#u-days') ? +$('#u-days').value : 7;
+    this.logState.days = days;
+    let ov, byModel, byChan, heat, daily;
+    try { ov = await api(`/admin/api/stats/overview?days=${days}`); } catch (e) { ov = {}; }
+    try { byModel = await api(`/admin/api/stats/by_model?days=${days}`); } catch (e) { byModel = []; }
+    try { byChan = await api(`/admin/api/stats/by_channel?days=${days}`); } catch (e) { byChan = []; }
+    try { heat = await api('/admin/api/stats/hourly_heatmap?days=7'); } catch (e) { heat = []; }
+    try { daily = await api('/admin/api/stats/daily?days=14'); } catch (e) { daily = {}; }
+    this._lastArgs = [ov, byModel, byChan, heat, daily];
+    this.refreshCharts(ov, byModel, byChan, heat, daily);
+    await this._refreshLogTable();
+  },
+  async _refreshLogTable() {
+    const {page, size} = this.logState;
+    const r = await api(`/admin/api/stats/logs?page=${page}&page_size=${size}`);
+    this.logState.total = r.total || 0;
+    const logs = r.items || [];
+    const tb = $('#log-tbody');
+    tb.innerHTML = logs.length ? logs.map(l => `<tr>
+      <td class="dim" style="font-size:12px;white-space:nowrap">${fmtTime(l.created_at)}</td>
+      <td>${esc(l.key_name || '-')}</td>
+      <td>${esc(l.channel_name || '-')}${l.cache_hit ? ' <span class="tag" style="background:rgba(139,92,246,.2);color:#a78bfa;font-size:10px;padding:0 4px">缓存·零转发</span>' : ''}</td>
+      <td class="mono" style="font-size:12px">${esc(l.model || '-')}</td>
+      <td class="mono">${fmtTokens(l.prompt_tokens)}</td>
+      <td class="mono">${fmtTokens(l.completion_tokens)}</td>
+      <td class="mono">${l.cache_hit
+        ? '<span class="tag" style="background:rgba(139,92,246,.2);color:#a78bfa;padding:1px 6px;font-size:10px">⚡ 缓存</span>'
+        : (l.cache_read_tokens || l.cache_creation_tokens
+          ? `<span style="color:var(--purple)" title="读 ${l.cache_read_tokens || 0} / 写 ${l.cache_creation_tokens || 0}">⚡${fmtTokens((l.cache_read_tokens || 0) + (l.cache_creation_tokens || 0))}</span>`
+          : '<span class="dim">-</span>')}</td>
+      <td class="mono">${fmtTokens(l.total_tokens)}${l.estimated ? ' <span class="dim" title="估算">≈</span>' : ''}</td>
+      <td>${fmtCost(l.cost)}</td>
+      <td class="mono">${fmtMs(l.latency_ms)}</td>
+      <td>${l.cache_hit ? '<span class="tag" style="background:rgba(139,92,246,.2);color:#a78bfa">⚡ 缓存</span>'
+        : l.success ? '<span class="tag ok">' + l.status_code + '</span>'
+        : `<span class="tag err">${l.status_code || 'ERR'}</span>${l.retries ? ' <span class="tag warn">重试' + l.retries + '</span>' : ''}`}</td>
+      <td class="dim" style="font-size:11px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(l.error)}">${esc(l.error || '-')}</td>
+    </tr>`).join('') : `<tr><td colspan="12"><div class="empty-tip">暂无调用记录</div></td></tr>`;
+    /* 分页栏 */
+    const pages = Math.max(1, Math.ceil(this.logState.total / size));
+    const pag = $('#u-log-pagination');
+    pag.innerHTML = `
+      <span class="dim" style="font-size:12px">共 ${this.logState.total} 条</span>
+      <select id="u-size" style="width:auto">
+        <option value="20" ${size === 20 ? 'selected' : ''}>20条/页</option>
+        <option value="50" ${size === 50 ? 'selected' : ''}>50条/页</option>
+        <option value="100" ${size === 100 ? 'selected' : ''}>100条/页</option>
+      </select>
+      <button class="btn ghost" id="u-prev" style="padding:3px 10px;font-size:12px" ${page <= 1 ? 'disabled' : ''}>‹ 上一页</button>
+      <span style="font-size:12px">${page} / ${pages}</span>
+      <button class="btn ghost" id="u-next" style="padding:3px 10px;font-size:12px" ${page >= pages ? 'disabled' : ''}>下一页 ›</button>`;
+    $('#u-size').onchange = () => { this.logState.size = +$('#u-size').value; this.logState.page = 1; this._refreshLogTable(); };
+    $('#u-prev').onclick = () => { if (this.logState.page > 1) { this.logState.page--; this._refreshLogTable(); } };
+    $('#u-next').onclick = () => { if (this.logState.page < pages) { this.logState.page++; this._refreshLogTable(); } };
+  },
+};
+
+/* ================= 调用日志 ================= */
+Pages.logs = {
+  state: {page: 1, size: 20},
+  async render(main) {
+    main.innerHTML = `
+      <div class="page-head"><h2>调用日志</h2>
+        <div class="actions">
+          <button class="btn ghost" id="lg-clean">清理旧日志</button>
+          <button class="btn danger" id="lg-clear">清空全部</button></div></div>
+      <div class="panel" style="padding:14px 16px;margin-bottom:16px">
+        <div class="form-row" style="margin-bottom:10px">
+          <div class="field"><label>模型(模糊)</label><input id="lg-model" placeholder="如 gpt-4o / auto"></div>
+          <div class="field"><label>渠道</label><select id="lg-channel"><option value="">全部</option></select></div>
+          <div class="field"><label>API Key</label><select id="lg-key"><option value="">全部</option></select></div>
+          <div class="field"><label>状态</label><select id="lg-success">
+            <option value="">全部</option><option value="true">成功</option><option value="false">失败</option></select></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>关键词(请求/响应/错误/IP)</label><input id="lg-q" placeholder="全文搜索"></div>
+          <div class="field"><label>请求 ID</label><input id="lg-rid" placeholder="X-Request-Id"></div>
+          <div class="field"><label>类型</label><select id="lg-stream">
+            <option value="">全部</option><option value="true">流式</option><option value="false">非流式</option></select></div>
+          <div class="field" style="display:flex;align-items:flex-end;gap:8px">
+            <button class="btn" id="lg-search">查询</button>
+            <button class="btn ghost" id="lg-reset">重置</button></div>
+        </div>
+      </div>
+      <div class="panel" style="padding:6px 10px;margin-bottom:12px">
+        <table class="gw-table"><thead><tr>
+          <th>时间</th><th>请求ID</th><th>模型</th><th>渠道</th><th>Key</th>
+          <th>类型</th><th>Tokens(入/出)</th><th>费用</th><th>延迟</th><th>状态</th><th>客户端</th><th>操作</th>
+        </tr></thead><tbody id="lg-tbody"></tbody></table>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span class="dim" id="lg-total">-</span>
+        <span style="display:flex;gap:8px;align-items:center">
+          <select id="lg-size" style="width:auto"><option>20</option><option>50</option><option>100</option></select>
+          <button class="btn ghost" id="lg-prev">上一页</button>
+          <span class="mono dim" id="lg-page">1</span>
+          <button class="btn ghost" id="lg-next">下一页</button>
+        </span>
+      </div>`;
+    // 填充渠道/Key 下拉
+    try {
+      const chans = await api('/admin/api/channels');
+      $('#lg-channel').innerHTML = '<option value="">全部</option>' +
+        chans.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+      const keys = await api('/admin/api/keys');
+      $('#lg-key').innerHTML = '<option value="">全部</option>' +
+        keys.map(k => `<option value="${k.id}">${esc(k.name || k.key)}</option>`).join('');
+    } catch (e) { /* ignore */ }
+
+    $('#lg-search').onclick = () => { this.state.page = 1; this.refresh(); };
+    $('#lg-reset').onclick = () => {
+      ['lg-model', 'lg-q', 'lg-rid'].forEach(id => $('#' + id).value = '');
+      ['lg-channel', 'lg-key', 'lg-success', 'lg-stream'].forEach(id => $('#' + id).value = '');
+      this.state.page = 1; this.refresh();
+    };
+    $('#lg-size').value = this.state.size;
+    $('#lg-size').onchange = () => { this.state.size = +$('#lg-size').value; this.state.page = 1; this.refresh(); };
+    $('#lg-prev').onclick = () => { if (this.state.page > 1) { this.state.page--; this.refresh(); } };
+    $('#lg-next').onclick = () => { this.state.page++; this.refresh(); };
+    $('#lg-clean').onclick = async () => {
+      const d = prompt('清理多少天前的日志?(输入天数,如 7)', '7');
+      if (!d) return;
+      const r = await apiDelete(`/admin/api/logs?days=${+d}`);
+      toast(`已清理 ${r.deleted} 条`, 'ok'); this.refresh();
+    };
+    $('#lg-clear').onclick = async () => {
+      if (!confirm('确定清空全部调用日志?此操作不可恢复')) return;
+      const r = await apiDelete('/admin/api/logs?days=0');
+      toast(`已清空 ${r.deleted} 条`, 'ok'); this.state.page = 1; this.refresh();
+    };
+    await this.refresh();
+  },
+  async refresh() {
+    const p = new URLSearchParams({page: this.state.page, page_size: this.state.size});
+    const get = (id) => ($('#' + id) ? $('#' + id).value.trim() : '');
+    ['lg-model', 'lg-q', 'lg-rid'].forEach(id => { const v = get(id); if (v) p.set(id.replace('lg-', ''), v); });
+    if (get('lg-channel')) p.set('channel_id', get('lg-channel'));
+    if (get('lg-key')) p.set('key_id', get('lg-key'));
+    if (get('lg-success')) p.set('success', get('lg-success'));
+    if (get('lg-stream')) p.set('stream', get('lg-stream'));
+
+    const r = await api('/admin/api/logs?' + p.toString());
+    this.state.page = r.page;
+    $('#lg-total').textContent = `共 ${r.total} 条 · 第 ${r.page}/${r.pages || 1} 页`;
+    $('#lg-page').textContent = r.page;
+    $('#lg-prev').disabled = r.page <= 1;
+    $('#lg-next').disabled = r.page >= (r.pages || 1);
+    const tb = $('#lg-tbody');
+    tb.innerHTML = r.items.length ? r.items.map(l => `<tr>
+      <td class="dim" style="font-size:12px;white-space:nowrap">${fmtTime(l.created_at)}</td>
+      <td class="mono" style="font-size:11px">${esc(l.request_id || '-')}</td>
+      <td class="mono" style="font-size:12px">${esc(l.model_actual || l.model_requested || '-')}
+        ${l.model_requested === 'auto' ? '<span class="tag info">auto</span>' : ''}</td>
+      <td>${esc(l.channel_name || '-')}</td>
+      <td>${esc(l.key_name || '-')}</td>
+      <td>${l.is_stream ? '<span class="tag info">流式</span>' : '<span class="dim">普通</span>'}</td>
+      <td class="mono">${fmtTokens(l.prompt_tokens)} / ${fmtTokens(l.completion_tokens)}${l.cache_hit ? ' <span class="tag" style="background:rgba(139,92,246,.2);color:#a78bfa;padding:0 4px;font-size:10px">⚡ 网关缓存</span>' : (l.cache_read_tokens ? ` <span style="color:var(--purple)" title="厂商提示词缓存读取">⚡${fmtTokens(l.cache_read_tokens)}</span>` : '')}</td>
+      <td>${fmtCost(l.cost)}</td>
+      <td class="mono">${fmtMs(l.latency_ms)}</td>
+      <td>${l.success ? '<span class="tag ok">' + l.status_code + '</span>'
+        : `<span class="tag err">${l.status_code || 'ERR'}</span>${l.retries ? ' <span class="tag warn">重试' + l.retries + '</span>' : ''}`}</td>
+      <td class="dim" style="font-size:11px">${esc(l.client_ip || '-')}</td>
+      <td><button class="btn ghost" style="padding:3px 9px;font-size:12px" data-id="${l.id}">详情</button></td>
+    </tr>`).join('') : `<tr><td colspan="12"><div class="empty-tip">暂无调用日志</div></td></tr>`;
+    $$('#lg-tbody button').forEach(b => b.onclick = () => this.detail(+b.dataset.id));
+  },
+  async detail(id) {
+    const d = await api('/admin/api/logs/' + id);
+    const pretty = (s) => {
+      if (!s) return '<span class="dim">(未记录内容)</span>';
+      try { return esc(JSON.stringify(JSON.parse(s), null, 2)); } catch (e) { return esc(s); }
+    };
+    openModal(`调用日志 #${d.id}`, `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;font-size:12.5px">
+        <div><span class="dim">时间:</span> ${fmtTime(d.created_at)}</div>
+        <div><span class="dim">请求ID:</span> <span class="mono">${esc(d.request_id || '-')}</span></div>
+        <div><span class="dim">客户端:</span> ${esc(d.client_ip || '-')}</div>
+        <div><span class="dim">模型:</span> ${esc(d.model_requested || '-')} → ${esc(d.model_actual || '-')}</div>
+        <div><span class="dim">渠道:</span> ${esc(d.channel_name || '-')}</div>
+        <div><span class="dim">Key:</span> ${esc(d.key_name || '-')}</div>
+        <div><span class="dim">状态:</span> ${d.success ? '<span class="tag ok">' + d.status_code + ' 成功</span>' : '<span class="tag err">' + (d.status_code || 'ERR') + ' 失败</span>'}</div>
+        <div><span class="dim">延迟:</span> ${fmtMs(d.latency_ms)} · 重试 ${d.retries || 0} 次</div>
+        <div><span class="dim">Tokens:</span> 入 ${d.prompt_tokens} / 出 ${d.completion_tokens} / 缓存 ${d.cache_read_tokens}</div>
+        <div><span class="dim">费用:</span> ${fmtCost(d.cost)}</div>
+        <div><span class="dim">响应缓存:</span> ${d.cache_hit ? '<span class="tag" style="background:rgba(139,92,246,.2);color:#a78bfa">⚡ 命中缓存(零费用)</span>' : '<span class="dim">直接转发上游</span>'}</div>
+      </div>
+      ${d.error ? `<div class="field"><label>错误信息</label><pre class="code" style="margin:0;color:var(--red);max-height:150px;overflow:auto">${pretty(d.error)}</pre></div>` : ''}
+      <div class="field"><label>请求体</label><pre class="code" style="margin:0;max-height:220px;overflow:auto">${pretty(d.request_body)}</pre></div>
+      <div class="field"><label>响应内容</label><pre class="code" style="margin:0;max-height:220px;overflow:auto">${pretty(d.response_body)}</pre></div>
+      <div class="dim" style="font-size:11px">User-Agent: ${esc(d.user_agent || '-')}</div>
+    `, `<button class="btn ghost" onclick="closeModal()">关闭</button>`);
+  },
+};
+
+/* ================= 系统设置 ================= */
+Pages.settings = {
+  subPage: 'basic',
+  async render(main) {
+    main.innerHTML = `
+      <div class="page-head"><h2>系统设置</h2></div>
+      <div class="sub-nav" style="display:flex;gap:4px;margin-bottom:16px">
+        <button class="btn ghost sub-nav-btn ${this.subPage === 'basic' ? 'active' : ''}" data-sub="basic">基本设置</button>
+        <button class="btn ghost sub-nav-btn ${this.subPage === 'presets' ? 'active' : ''}" data-sub="presets">预设厂商</button>
+        <button class="btn ghost sub-nav-btn ${this.subPage === 'update' ? 'active' : ''}" data-sub="update">更新设置</button>
+      </div>
+      <div id="settings-content"></div>`;
+    $$('.sub-nav-btn').forEach(b => b.onclick = () => {
+      this.subPage = b.dataset.sub;
+      $$('.sub-nav-btn').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      this.renderSub();
+      // 写入 hash,刷新/前进后退可保留子页
+      if (b.dataset.sub === 'presets') history.replaceState(null, '', '#settings:presets');
+      else if (b.dataset.sub === 'update') history.replaceState(null, '', '#settings:update');
+      else history.replaceState(null, '', window.location.pathname);
+    });
+    this.renderSub();
+  },
+  async renderSub() {
+    if (this.subPage === 'presets') await this.renderPresets();
+    else if (this.subPage === 'update') await this.renderUpdate();
+    else await this.renderBasic();
+  },
+  async renderBasic() {
+    const c = $('#settings-content');
+    c.innerHTML = `
+      <div class="panel" style="padding:20px;max-width:560px">
+        <div class="form-row">
+          <div class="field"><label>渠道默认超时(秒)</label><input id="s-timeout" type="number"></div>
+          <div class="field"><label>故障转移最大尝试渠道数</label><input id="s-retry" type="number"></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>熔断阈值(连续失败次数)</label><input id="s-threshold" type="number"></div>
+          <div class="field"><label>熔断冷却(秒)</label><input id="s-cooldown" type="number"></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>渠道定时探测间隔(秒,0=关闭)</label><input id="s-probe" type="number">
+            <div class="hint">探测使用上游模型列表端点,不消耗 token 额度</div></div>
+        </div>
+        <div class="field"><label>auto 模型偏好(逗号分隔,留空 = 自动扫描全部渠道模型)</label>
+          <input id="s-auto" placeholder="如 deepseek-chat, gpt-4o-mini, claude-sonnet-4-5">
+          <div class="hint">model=auto 时按此顺序尝试;未命中偏好时回退到 Key 白名单/全部模型</div></div>
+        <div class="form-row">
+          <div class="field"><label>auto 总超时(秒)</label><input id="s-auto-to" type="number">
+            <div class="hint">auto 依次尝试候选模型的总时间预算,超时后返回失败</div></div>
+          <div class="field"><label>auto 最大候选数</label><input id="s-auto-max" type="number">
+            <div class="hint">未配偏好时最多尝试的模型数量(1-20)</div></div>
+        </div>
+        <div style="margin-top:16px;display:flex;justify-content:flex-end">
+          <button class="btn" id="btn-save-set">保存设置</button></div>
+      </div>
+      <div class="panel" style="padding:20px;max-width:560px;margin-top:18px">
+        <h3 style="font-size:14px;color:var(--text-dim);margin-bottom:14px">调用日志</h3>
+        <div class="form-row">
+          <div class="field"><label>记录请求/响应内容</label>
+            <select id="s-logbodies">
+              <option value="1">记录(便于排查)</option>
+              <option value="0">不记录(仅元数据)</option></select></div>
+          <div class="field"><label>内容截断上限(字符)</label><input id="s-logmax" type="number"></div>
+        </div>
+        <div class="field"><label>日志保留天数(0 = 永久保留)</label><input id="s-logdays" type="number">
+          <div class="hint">过期日志由后台定时任务自动清理</div></div>
+      </div>
+      <div class="panel" style="padding:20px;max-width:560px;margin-top:18px">
+        <div class="field"><label>修改管理员密码</label></div>
+        <div class="field"><input id="s-old" type="password" placeholder="原密码"></div>
+        <div class="field"><input id="s-new" type="password" placeholder="新密码(至少6位)"></div>
+        <div style="margin-top:14px;display:flex;justify-content:flex-end">
+          <button class="btn" id="btn-pwd">修改密码</button></div>
+      </div>`;
+    const s = await api('/admin/api/settings');
+    $('#s-timeout').value = s.default_timeout; $('#s-retry').value = s.max_retry;
+    $('#s-threshold').value = s.breaker_threshold; $('#s-cooldown').value = s.breaker_cooldown;
+    $('#s-probe').value = s.probe_interval;
+    $('#s-auto').value = s.auto_models || '';
+    $('#s-auto-to').value = s.auto_timeout || 120;
+    $('#s-auto-max').value = s.auto_max_models || 5;
+    $('#s-logbodies').value = s.log_bodies === '0' || s.log_bodies === 0 ? '0' : '1';
+    $('#s-logmax').value = s.log_body_max ?? 2000;
+    $('#s-logdays').value = s.log_retention_days ?? 7;
+    $('#btn-save-set').onclick = async () => {
+      try {
+        await apiPost('/admin/api/settings', {
+          default_timeout: $('#s-timeout').value, max_retry: $('#s-retry').value,
+          breaker_threshold: $('#s-threshold').value, breaker_cooldown: $('#s-cooldown').value,
+          probe_interval: $('#s-probe').value, auto_models: $('#s-auto').value,
+          auto_timeout: $('#s-auto-to').value, auto_max_models: $('#s-auto-max').value,
+          log_bodies: $('#s-logbodies').value, log_body_max: $('#s-logmax').value,
+          log_retention_days: $('#s-logdays').value});
+        toast('已保存', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    $('#btn-pwd').onclick = async () => {
+      try {
+        await apiPost('/admin/api/password', {old: $('#s-old').value, new: $('#s-new').value});
+        toast('密码已修改', 'ok'); $('#s-old').value = $('#s-new').value = '';
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  },
+  /* ---------- 更新设置子页 ---------- */
+  async renderUpdate() {
+    const c = $('#settings-content');
+    c.innerHTML = `
+      <div class="panel" style="padding:20px;max-width:680px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <h3 style="font-size:14px;color:var(--text-dim)">版本与更新</h3>
+          <div style="display:flex;gap:8px">
+            <button class="btn ghost" id="btn-up-check" style="padding:4px 12px;font-size:12px">立即检查更新</button>
+            <button class="btn" id="btn-up-apply" style="padding:4px 12px;font-size:12px">一键更新</button>
+          </div>
+        </div>
+        <div id="up-status">载入中...</div>
+      </div>
+      <div class="panel" style="padding:20px;max-width:680px;margin-top:18px">
+        <h3 style="font-size:14px;color:var(--text-dim);margin-bottom:14px">更新设置</h3>
+        <div class="form-row">
+          <div class="field"><label>启用新版本提醒</label><select id="s-up-enabled">
+            <option value="1">启用(自动检查并在侧栏提醒)</option>
+            <option value="0">停用</option></select></div>
+          <div class="field"><label>自动检查间隔(小时,0=仅手动)</label><input id="s-up-interval" type="number"></div>
+        </div>
+        <div class="field"><label>更新源仓库 URL</label><input id="s-up-repo" placeholder="https://github.com/xxx/xxx.git 或 git@host:path"></div>
+        <div class="field"><label>备用更新源仓库 URL(主源不可达时自动切换,可留空)</label><input id="s-up-repo-fallback" placeholder="https://gitcode.com/xxx/xxx.git 或 git@host:path"></div>
+        <div class="field"><label>备用更新源仓库 URL(主源不可达时自动切换,可留空)</label><input id="s-up-repo-fallback" placeholder="https://gitcode.com/xxx/xxx.git 或 git@host:path"></div>
+        <div class="form-row">
+          <div class="field"><label>更新分支</label><input id="s-up-branch" placeholder="main"></div>
+          <div class="field"><label>更新后自动处理</label><select id="s-up-restart">
+            <option value="1">自动重启服务 / 重建容器</option>
+            <option value="0">仅拉取代码,手动处理</option></select></div>
+        </div>
+        <div class="field"><label>更新方式</label>
+          <select id="s-up-mode" style="max-width:420px">
+            <option value="direct">直接运行(拉取代码后自动重启当前服务进程)</option>
+            <option value="docker">Docker(拉取代码后执行 docker compose up -d --build)</option></select>
+          <div class="hint" id="s-up-mode-hint"></div></div>
+        <div style="margin-top:16px;display:flex;justify-content:flex-end">
+          <button class="btn" id="btn-save-up">保存设置</button></div>
+      </div>`;
+    $('#btn-up-check').onclick = () => this.doCheck();
+    $('#btn-up-apply').onclick = () => this.confirmApply();
+    $('#s-up-mode').onchange = () => this.updateModeHint();
+    $('#btn-save-up').onclick = () => this.saveUpdateSettings();
+    const s = await api('/admin/api/settings');
+    $('#s-up-enabled').value = (s.update_enabled === '0' || s.update_enabled === 0) ? '0' : '1';
+    $('#s-up-repo').value = s.update_repo || '';
+    $('#s-up-repo-fallback').value = s.update_repo_fallback || '';
+    $('#s-up-repo-fallback').value = s.update_repo_fallback || '';
+    $('#s-up-branch').value = s.update_branch || '';
+    $('#s-up-interval').value = s.update_check_interval ?? 6;
+    $('#s-up-restart').value = (s.update_auto_restart === '0' || s.update_auto_restart === 0) ? '0' : '1';
+    $('#s-up-mode').value = s.update_mode === 'docker' ? 'docker' : 'direct';
+    this.updateModeHint();
+    this.refreshUpdateStatus();
+  },
+  updateModeHint() {
+    const m = $('#s-up-mode').value;
+    $('#s-up-mode-hint').textContent = m === 'docker'
+      ? '需在项目根目录提供 docker-compose.yml / compose.yml;更新后自动重建容器'
+      : '直接运行:git pull 后自动重启当前服务进程(备用方案:仅拉取代码手动重启)';
+  },
+  /* 版本信息卡片 + 更新结果 */
+  async refreshUpdateStatus() {
+    const box = $('#up-status');
+    if (!box) return;
+    let st;
+    try { st = await api('/admin/api/update/status'); }
+    catch (e) { box.innerHTML = `<div class="hint">状态获取失败: ${esc(e.message)}</div>`; return; }
+    const cur = st.current || {}, lat = st.latest || {};
+    const fmtD = t => t ? new Date(t).toLocaleString('zh-CN', {hour12: false}) : '-';
+    box.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div style="border:1px solid rgba(0,229,255,.15);border-radius:6px;padding:10px 12px">
+          <div class="dim" style="font-size:11px;margin-bottom:4px">当前版本(本地)</div>
+          <div class="mono" style="font-size:14px">${cur.short ? esc(cur.short) : '-'}</div>
+          <div class="dim" style="font-size:11px;word-break:break-all">${cur.subject ? esc(cur.subject) : '非 git 仓库'}</div>
+          <div class="dim" style="font-size:11px">${cur.date ? fmtD(cur.date) : ''}</div>
+        </div>
+        <div style="border:1px solid rgba(0,229,255,.15);border-radius:6px;padding:10px 12px">
+          <div class="dim" style="font-size:11px;margin-bottom:4px">远端最新(${esc(st.interval_hours)}h 自动检查)</div>
+          <div class="mono" style="font-size:14px">${lat.short ? esc(lat.short) : '<span class="dim" style="font-size:12px">尚未检查</span>'}</div>
+          <div class="dim" style="font-size:11px;word-break:break-all">${lat.subject ? esc(lat.subject) : ''}</div>
+          <div class="dim" style="font-size:11px">${lat.date ? fmtD(lat.date) : ''}</div>
+        </div>
+      </div>
+      <div style="margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        ${st.has_update
+          ? `<span class="tag" style="color:#ff5f6d;border-color:rgba(255,95,109,.45)">发现新版本${st.behind > 0 ? ' · 落后 ' + st.behind + ' 个提交' : ''}</span>
+             <button class="btn" id="btn-up-go" style="padding:4px 12px;font-size:12px">立即更新</button>`
+          : '<span class="tag info">已是最新版本</span>'}
+        ${st.checking ? '<span class="dim" style="font-size:12px">正在检查远端...</span>' : ''}
+        ${st.applying ? '<span class="dim" style="font-size:12px">更新执行中...</span>' : ''}
+        <span class="dim" style="font-size:12px">上次检查: ${st.last_check ? fmtD(st.last_check * 1000) : '从未'}</span>
+        ${st.used_repo ? `<div class="dim" style="font-size:12px;width:100%">本次实际使用节点: <span class="mono" style="font-size:11px;word-break:break-all;color:var(--text)">${esc(st.used_repo)}</span></div>` : ''}
+      </div>
+      ${st.result_error ? `<div style="margin-top:8px;font-size:12px;color:#ff5f6d">上次检查失败: ${esc(st.result_error)}</div>` : ''}
+      <div id="up-apply-box" style="margin-top:10px"></div>`;
+    if (st.has_update) $('#btn-up-go').onclick = () => this.confirmApply();
+    const ab = $('#up-apply-box');
+    if (st.apply) {
+      const a = st.apply;
+      ab.innerHTML = `<div style="font-size:12px;margin-top:4px">最近更新: ${fmtD((a.finished_at || a.started_at || 0) * 1000)}
+        <span style="color:${a.ok ? '#4ade80' : '#ff5f6d'}">${a.ok ? '成功' : '失败'}</span>
+        — ${esc(a.message)}</div>
+        ${(a.steps || []).map(x => {
+          const cmd = x.cmd || '';
+          const label = /pip.*install/.test(cmd) ? 'pip install(依赖同步)'
+            : /git.*merge/.test(cmd) ? 'git merge(代码合并)'
+            : /git.*reset.*hard/.test(cmd) ? 'git reset(回退代码)'
+            : /git.*stash.*pop/.test(cmd) ? 'git stash pop(恢复本地改动)'
+            : /git.*stash.*drop/.test(cmd) ? 'git stash drop(清理暂存)'
+            : /git.*fetch/.test(cmd) ? 'git fetch(拉取远端)'
+            : /docker.*compose/.test(cmd) ? 'docker compose(重建容器)'
+            : cmd;
+          return `<div class="mono" style="font-size:11px;color:${x.ok ? '#4ade80' : '#ff5f6d'};margin-top:2px">
+            ${esc(x.ok ? '✔' : '✘')} ${esc(label)}${x.err ? ' — ' + esc(x.err.slice(0, 200)) : ''}</div>`;
+        }).join('')}`;
+    }
+    this.applyButtonState(st);
+  },
+  applyButtonState(st) {
+    const checkBtn = $('#btn-up-check'), applyBtn = $('#btn-up-apply');
+    if (!checkBtn) return;
+    const busy = !!(st.applying || st.checking);
+    checkBtn.disabled = applyBtn.disabled = busy;
+    checkBtn.textContent = st.checking ? '检查中...' : '立即检查更新';
+    applyBtn.textContent = st.applying ? '更新中...' : '一键更新';
+  },
+  /* 一键更新执行期间每秒轮询,结束后刷新结果 */
+  async refreshWithPolling() {
+    for (let i = 0; i < 180; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      let st;
+      try { st = await api('/admin/api/update/status'); }
+      catch (e) { continue; }   // 服务重启期间请求失败属正常
+      if (!st) continue;
+      this.applyButtonState(st);
+      if (!st.applying) {
+        this.refreshUpdateStatus();
+        if (st.apply && st.apply.ok && st.apply.needs_restart) toast(st.apply.message, 'ok');
+        else if (st.apply && !st.apply.ok) toast(st.apply.message, 'err');
+        return;
+      }
+    }
+    this.refreshUpdateStatus();
+  },
+  async confirmApply() {
+    const isDocker = $('#s-up-mode').value === 'docker';
+    openModal('确认一键更新', `
+      <div style="font-size:13px;line-height:1.9">
+        <p>将拉取更新源仓库的最新代码并合并到本地,<b>更新期间服务可能出现短暂中断</b>。</p>
+        <p>执行方式: <span class="mono">${isDocker ? 'docker compose up -d --build(自动处理依赖)' : 'git pull + 自动重启服务'}</span></p>
+        <p class="hint">${isDocker
+          ? 'Docker 方式会重建容器,Dockerfile 内的 pip install 会自动同步 requirements.txt 依赖。'
+          : '直接运行方式:合并代码后,若 requirements.txt 有变更会自动 pip install 并做 import 预检;预检失败自动回退到更新前代码,不会留下起不来的服务。重启时页面会短暂无法访问。'}</p>
+      </div>`,
+      `<button class="btn ghost" style="margin-right:8px" onclick="closeModal()">取消</button>
+       <button class="btn danger" id="btn-confirm-up">确认更新</button>`);
+    $('#btn-confirm-up').onclick = async () => {
+      closeModal();
+      try {
+        await apiPost('/admin/api/update/apply', {});
+        this.refreshUpdateStatus();
+        this.refreshWithPolling();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  },
+  async doCheck() {
+    const btn = $('#btn-up-check');
+    if (!btn) return;
+    btn.disabled = true; btn.textContent = '检查中...';
+    try {
+      await apiPost('/admin/api/update/check', {});
+      setTimeout(() => this.refreshUpdateStatus(), 500);
+    } catch (e) {
+      toast(e.message, 'err');
+      btn.disabled = false; btn.textContent = '立即检查更新';
+    }
+  },
+  async saveUpdateSettings() {
+    try {
+      await apiPost('/admin/api/settings', {
+        update_enabled: $('#s-up-enabled').value,
+        update_repo: ($('#s-up-repo').value || '').trim(),
+        update_repo_fallback: ($('#s-up-repo-fallback').value || '').trim(),
+        update_repo_fallback: ($('#s-up-repo-fallback').value || '').trim(),
+        update_branch: ($('#s-up-branch').value || '').trim() || 'main',
+        update_mode: $('#s-up-mode').value,
+        update_check_interval: $('#s-up-interval').value,
+        update_auto_restart: $('#s-up-restart').value,
+      });
+      toast('更新设置已保存', 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+  },
+  /* ---------- 预设厂商子页 ---------- */
+  async renderPresets() {
+    const c = $('#settings-content');
+    c.innerHTML = `
+      <div class="panel" style="padding:6px 10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div class="dim" style="font-size:12px">管理预设厂商,新增渠道时可选;支持两个自定义字段与快速获取 Key 链接</div>
+          <button class="btn" id="btn-add-preset">＋ 新增预设</button>
+        </div>
+        <table class="gw-table"><thead><tr>
+          <th>ID</th><th>名称</th><th>适配器</th><th>Base URL</th><th>模型数</th>
+          <th>自定义字段</th><th>获取Key</th><th>内置</th><th>操作</th>
+        </tr></thead><tbody id="preset-tbody"></tbody></table>
+      </div>`;
+    $('#btn-add-preset').onclick = () => this.presetEdit(null);
+    await this.presetRefresh();
+  },
+  async presetRefresh() {
+    const list = await api('/admin/api/presets');
+    const tb = $('#preset-tbody');
+    if (!list.length) { tb.innerHTML = `<tr><td colspan="9"><div class="empty-tip">暂无预设</div></td></tr>`; return; }
+    tb.innerHTML = list.map(p => {
+      const customs = [p.custom_1_key, p.custom_2_key].filter(Boolean);
+      return `<tr>
+        <td class="mono" style="font-size:12px">${esc(p.id)}</td>
+        <td><b>${esc(p.name)}</b>${p.note ? `<div class="dim" style="font-size:11px">${esc(p.note)}</div>` : ''}</td>
+        <td style="font-size:12px">${esc(_adapterLabels[p.adapter] || p.adapter)}</td>
+        <td class="mono" style="font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.base_url)}">${esc(p.base_url || '-')}</td>
+        <td class="mono">${(p.models || []).length}</td>
+        <td class="dim" style="font-size:11px">${customs.length ? customs.map(k => esc(k)).join(', ') : '-'}</td>
+        <td>${p.key_url ? `<a href="${esc(p.key_url)}" target="_blank" rel="noopener" style="color:var(--cyan);font-size:11px">链接 ↗</a>` : '<span class="dim">-</span>'}</td>
+        <td>${p.is_built_in ? '<span class="tag info">内置</span>' : '<span class="dim">自定义</span>'}</td>
+        <td style="white-space:nowrap">
+          <button class="btn ghost" style="padding:3px 9px;font-size:12px" data-act="edit" data-id="${esc(p.id)}">编辑</button>
+          <button class="btn danger" style="padding:3px 9px;font-size:12px" data-act="del" data-id="${esc(p.id)}" ${p.is_built_in ? 'disabled title="内置不可删除"' : ''}>删除</button></td></tr>`;
+    }).join('');
+    $$('#preset-tbody button').forEach(b => b.onclick = () => {
+      const act = b.dataset.act, id = b.dataset.id;
+      if (act === 'edit') this.presetEdit(list.find(x => x.id === id));
+      else if (act === 'del') this.presetDel(id);
+    });
+  },
+  async presetEdit(p) {
+    const isEdit = !!p;
+    const d = p || {id: '', name: '', adapter: 'openai_compat', base_url: '', models: [],
+      probe_mode: 'models', user_agent: '', needs_proxy: false, local: false, note: '',
+      key_url: '', custom_1_label: '', custom_1_key: '', custom_1_placeholder: '',
+      custom_2_label: '', custom_2_key: '', custom_2_placeholder: ''};
+    const escM = (s) => esc(JSON.stringify(s || [], null, 0));
+    await loadAdapters();
+    openModal(isEdit ? '编辑预设' : '新增预设', `
+      <div class="form-row">
+        <div class="field"><label>预设 ID *</label><input id="pr-id" value="${esc(d.id)}" ${isEdit ? 'readonly' : ''} placeholder="如 agnes(英文,唯一标识)"></div>
+        <div class="field"><label>显示名称 *</label><input id="pr-name" value="${esc(d.name)}" placeholder="如 Agnes"></div>
+      </div>
+      <div class="form-row">
+        <div class="field" style="flex:2"><label>Base URL</label><input id="pr-base" value="${esc(d.base_url)}" placeholder="https://..."></div>
+        <div class="field"><label>适配器</label>
+          <select id="pr-adapter">${(_ADAPTERS || []).map(a =>
+            `<option value="${a.name}" ${a.name === d.adapter ? 'selected' : ''}>${esc(a.label)}</option>`).join('')}</select>
+          <div class="hint" id="pr-adapter-hint" style="margin-top:4px">${esc((_ADAPTERS || []).find(x => x.name === d.adapter)?.description || '')}</div></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>探测方式</label>
+          <select id="pr-probe">
+            <option value="models" ${d.probe_mode === 'models' ? 'selected' : ''}>模型列表端点(免费)</option>
+            <option value="chat" ${d.probe_mode === 'chat' ? 'selected' : ''}>聊天端点(极少消耗)</option>
+            <option value="off" ${d.probe_mode === 'off' ? 'selected' : ''}>不探测</option>
+          </select></div>
+        <div class="field"><label>自定义 User-Agent</label><input id="pr-ua" value="${esc(d.user_agent)}" placeholder="可选"></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>常用模型(逗号分隔)</label>
+          <input id="pr-models" value="${esc((d.models || []).join(', '))}" placeholder="model-a, model-b"></div>
+        <div class="field"><label>快速获取 Key 链接</label>
+          <input id="pr-keyurl" value="${esc(d.key_url)}" placeholder="https://.../api-keys"></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>自定义字段1 名称</label><input id="pr-c1l" value="${esc(d.custom_1_label)}" placeholder="如 Organization ID"></div>
+        <div class="field"><label>键名</label><input id="pr-c1k" value="${esc(d.custom_1_key)}" placeholder="如 openai-organization"></div>
+        <div class="field"><label>占位提示</label><input id="pr-c1p" value="${esc(d.custom_1_placeholder)}" placeholder="可选"></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>自定义字段2 名称</label><input id="pr-c2l" value="${esc(d.custom_2_label)}" placeholder="如 Project ID"></div>
+        <div class="field"><label>键名</label><input id="pr-c2k" value="${esc(d.custom_2_key)}" placeholder="如 project-id"></div>
+        <div class="field"><label>占位提示</label><input id="pr-c2p" value="${esc(d.custom_2_placeholder)}" placeholder="可选"></div>
+      </div>
+      <div class="form-row">
+        <div class="field" style="display:flex;align-items:center;gap:18px">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="pr-proxy" ${d.needs_proxy ? 'checked' : ''}> 需代理访问</label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="pr-local" ${d.local ? 'checked' : ''}> 本地服务</label>
+        </div>
+      </div>
+      <div class="field"><label>备注</label><input id="pr-note" value="${esc(d.note)}" placeholder="可选说明"></div>
+    `, `
+      <button class="btn ghost" onclick="closeModal()">取消</button>
+      <button class="btn" id="btn-save-preset">保存</button>`);
+    // 预设适配器选择时更新描述
+    $('#pr-adapter').onchange = () => {
+      const a = (_ADAPTERS || []).find(x => x.name === $('#pr-adapter').value);
+      $('#pr-adapter-hint').textContent = a ? a.description : '';
+    };
+    $('#btn-save-preset').onclick = async () => {
+      const id = $('#pr-id').value.trim();
+      if (!id || !$('#pr-name').value.trim()) return toast('ID 和名称必填', 'err');
+      const body = {
+        id, name: $('#pr-name').value.trim(),
+        adapter: $('#pr-adapter').value, base_url: $('#pr-base').value.trim(),
+        models: $('#pr-models').value.split(',').map(s => s.trim()).filter(Boolean),
+        probe_mode: $('#pr-probe').value, user_agent: $('#pr-ua').value.trim(),
+        key_url: $('#pr-keyurl').value.trim(),
+        custom_1_label: $('#pr-c1l').value.trim(), custom_1_key: $('#pr-c1k').value.trim(),
+        custom_1_placeholder: $('#pr-c1p').value.trim(),
+        custom_2_label: $('#pr-c2l').value.trim(), custom_2_key: $('#pr-c2k').value.trim(),
+        custom_2_placeholder: $('#pr-c2p').value.trim(),
+        needs_proxy: $('#pr-proxy').checked, local: $('#pr-local').checked,
+        note: $('#pr-note').value.trim(),
+      };
+      try {
+        if (isEdit) await apiPut('/admin/api/presets/' + id, body);
+        else await apiPost('/admin/api/presets', body);
+        closeModal(); toast('已保存', 'ok'); this.presetRefresh();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  },
+  async presetDel(id) {
+    if (!confirm(`确定删除预设「${id}」?`)) return;
+    try {
+      await apiDelete('/admin/api/presets/' + encodeURIComponent(id));
+      toast('已删除', 'ok'); this.presetRefresh();
+    } catch (e) { toast(e.message, 'err'); }
+  },
+};
+
+/* ================= 总览 ================= */
+Pages.dashboard = {
+  async render(main) {
+    main.innerHTML = `
+      <div class="page-head"><h2>总览</h2>
+        <div class="actions">
+          <button class="btn ghost" onclick="location.href='/docs'">接口文档</button>
+          <button class="btn ghost" onclick="location.href='/screen'">打开大屏 →</button></div></div>
+      <div class="stat-grid" id="d-stats"></div>
+      <div class="chart-flex">
+        <div class="panel chart-panel"><h3>24 小时调用趋势</h3><div id="d-trend" style="height:280px"></div></div>
+        <div class="panel chart-panel"><h3>渠道健康(定时探测)</h3><div id="d-channels" style="height:280px;overflow-y:auto"></div></div>
+      </div>
+      <div class="chart-flex" style="margin-top:18px">
+        <div class="panel chart-panel"><h3>调用时段热点(近7天 · 周x24h)</h3><div id="d-heat" style="height:380px"></div></div>
+      </div>`;
+    await this.refresh();
+  },
+  async refresh() {
+    // 独立请求:单个接口失败不影响其他渲染
+    let ov, trend, channels, heat;
+    try { ov = await api('/admin/api/stats/overview?days=1'); } catch (e) { ov = {}; }
+    try { trend = await api('/admin/api/stats/trend?days=1'); } catch (e) { trend = []; }
+    try { channels = await api('/admin/api/channels'); } catch (e) { channels = []; }
+    try { heat = await api('/admin/api/stats/hourly_heatmap?days=7'); } catch (e) { heat = []; }
+    $('#d-stats').innerHTML = [
+      ['今日调用', ov.total_calls, 'cyan'], ['今日 Tokens', fmtTokens(ov.today_tokens), 'purple'],
+      ['今日费用', fmtCost(ov.today_cost), 'amber'], ['平均延迟', fmtMs(ov.avg_latency_ms), 'amber'],
+      ['在线渠道', `${ov.online_channels} / ${ov.total_channels}`, 'green'],
     ].map(([l, v, c]) => `<div class="panel stat-card">
       <div class="label"><span>${l}</span></div><div class="value ${c}">${v}</div></div>`).join('');
-
     disposeCharts();
     const chart = mkChart($('#d-trend'));
     chart.setOption({
@@ -1557,26 +2282,6 @@ Pages.dashboard = {
         <span class="dim" style="font-size:12px">${state}</span></div>`;
     }).join('') : `<div class="empty-tip">暂无渠道</div>`;
 
-    /* 缓存命中趋势(24h):后端按小时补零,始终按完整 24 小时轴展示,全零也画出 0 基线 */
-    const cacheChart = mkChart($('#d-cache-trend'));
-    const ctData = cacheTrend || [];
-    cacheChart.setOption({
-      tooltip: {trigger: 'axis', backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
-        textStyle: {color: '#d7e6ff', fontSize: 11}},
-      grid: {left: 10, right: 16, top: 30, bottom: 10, containLabel: true},
-      legend: {data: ['命中数', '节省费用'], textStyle: CHART_TEXT, top: 0, right: 0},
-      xAxis: {type: 'category', data: ctData.map(t => t.hour.slice(11, 16)), ...CHART_AXIS},
-      yAxis: [{type: 'value', ...CHART_AXIS, name: '命中数'},
-              {type: 'value', ...CHART_AXIS, splitLine: {show: false}, name: '费用'}],
-      series: [
-        {name: '命中数', type: 'bar', data: ctData.map(t => t.hits), barWidth: 10,
-          itemStyle: {color: {type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-            colorStops: [{offset: 0, color: '#8b5cf6'}, {offset: 1, color: '#6366f1'}]}}},
-        {name: '节省费用', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'circle', symbolSize: 4,
-          data: ctData.map(t => t.saved_cost), lineStyle: {color: '#f59e0b', width: 2},
-          itemStyle: {color: '#f59e0b'}},
-      ]});
-
     /* 调用时段热力图(周 x 24h) */
     const hmc = mkChart($('#d-heat'));
     const days = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
@@ -1607,164 +2312,3 @@ Pages.dashboard = {
   },
 };
 
-/* ================= 缓存管理 ================= */
-Pages.cache = {
-  _hours: 24,
-  async render(main) {
-    main.innerHTML = `
-      <div class="page-head"><h2>响应缓存管理</h2>
-        <div class="actions">
-          <button class="btn ghost" id="ca-refresh">⟳ 刷新</button>
-          <button class="btn danger" id="ca-clear">🗑 清空缓存</button></div></div>
-      <div class="stat-grid" id="ca-stats"></div>
-      <div class="stat-grid" id="ca-upstream-stats"></div>
-      <div class="panel chart-panel" style="margin-bottom:18px">
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <h3>缓存命中趋势</h3>
-          <div class="btn-group" id="ca-range" style="display:flex;gap:2px">
-            <button class="btn ghost active" data-h="24" style="padding:2px 8px;font-size:11px">24h</button>
-            <button class="btn ghost" data-h="72" style="padding:2px 8px;font-size:11px">3天</button>
-            <button class="btn ghost" data-h="168" style="padding:2px 8px;font-size:11px">7天</button>
-          </div>
-        </div>
-        <div id="ca-trend" style="height:280px"></div>
-      </div>
-      <div class="panel" style="padding:6px 10px;margin-bottom:18px">
-        <h3 style="margin-bottom:8px">最近命中记录</h3>
-        <table class="gw-table"><thead><tr>
-          <th>时间</th><th>模型</th><th>类型</th><th>输入tk</th><th>输出tk</th>
-          <th>节省费用</th><th>剩余TTL</th>
-        </tr></thead><tbody id="ca-tbody"></tbody></table>
-      </div>
-      <div class="panel" style="padding:20px;max-width:560px">
-        <h3 style="font-size:14px;color:var(--text-dim);margin-bottom:14px">缓存配置</h3>
-        <div class="form-row">
-          <div class="field"><label>启用响应缓存</label>
-            <select id="ca-enabled"><option value="1">启用</option><option value="0">禁用</option></select></div>
-          <div class="field"><label>默认 TTL(秒)</label><input id="ca-ttl" type="number" min="10" placeholder="300"></div>
-        </div>
-        <div class="form-row">
-          <div class="field"><label>确定性输出 TTL(秒)</label><input id="ca-ttl-det" type="number" min="60" placeholder="3600"></div>
-          <div class="field" style="align-self:flex-end"><label class="dim" style="font-size:11px">temperature≤0.1 / embeddings 走此 TTL,其余走默认 TTL</label></div>
-        </div>
-        <div class="form-row">
-          <div class="field"><label>内存 LRU 上限(条)</label><input id="ca-mem" type="number" min="10" placeholder="500"></div>
-          <div class="field"><label>SQLite 上限(条)</label><input id="ca-sqlite" type="number" min="100" placeholder="10000"></div>
-        </div>
-        <div style="margin-top:16px;display:flex;justify-content:flex-end">
-          <button class="btn" id="ca-save">保存配置</button></div>
-        <div class="dim" style="font-size:11px;margin-top:10px">
-          说明: 响应缓存缓存 chat/completions/embeddings 中「相同请求体」的输出(按请求体+模型+渠道 SHA256 取键,
-          <b>user 字段与网关注入的 stream_options 不参与取键</b>——不同客户端标识的同一请求也能命中)。命中后零转发零费用。
-          <b>命中率提升</b>: 相同/近似重复请求(批处理、多客户端同 prompt、工具重试、auto 跨候选模型)越多,命中越多;
-          LLM 开放式问答天然难命中。temperature≤0.1 与 embeddings 走「确定性输出 TTL」(可长缓存),其余走默认 TTL。
-          厂商提示词缓存(日志详情 ⚡)是另一套机制——转发到上游时命中其前缀缓存。
-          客户端可通过请求头 <span class="mono">X-Cache-Bypass: 1</span> 强制跳过响应缓存。
-        </div>
-      </div>`;
-    $('#ca-refresh').onclick = () => this.refresh();
-    $('#ca-clear').onclick = async () => {
-      if (!confirm('确定清空全部缓存?')) return;
-      await apiDelete('/admin/api/cache');
-      toast('已清空缓存', 'ok');
-      this.refresh();
-    };
-    $$('#ca-range button').forEach(b => b.onclick = () => {
-      this._hours = +b.dataset.h;
-      $$('#ca-range button').forEach(x => x.classList.remove('active'));
-      b.classList.add('active');
-      this._refreshTrend();
-    });
-    $('#ca-save').onclick = async () => {
-      try {
-        await apiPut('/admin/api/cache/config', {
-          cache_enabled: $('#ca-enabled').value,
-          cache_ttl: +$('#ca-ttl').value,
-          cache_ttl_deterministic: +$('#ca-ttl-det').value,
-          cache_max_memory: +$('#ca-mem').value,
-          cache_max_sqlite: +$('#ca-sqlite').value,
-        });
-        toast('已保存', 'ok');
-      } catch (e) { toast(e.message, 'err'); }
-    };
-    await this.refresh();
-  },
-  async refresh() {
-    const [st, trend, recent, cfg] = await Promise.all([
-      api('/admin/api/cache/stats'),
-      api(`/admin/api/cache/trend?hours=${this._hours}`),
-      api('/admin/api/cache/recent?limit=50'),
-      api('/admin/api/cache/config'),
-    ]);
-    // KPI — 网关响应缓存(零转发,累计 DB 口径)
-    $('#ca-stats').innerHTML = [
-      ['响应缓存命中率', (st.hit_rate || 0) + '%', 'purple'],
-      ['响应缓存命中', `${st.hits || 0} · ${fmtTokens(st.hit_tokens || 0)} tk`, 'cyan'],
-      ['未命中(请求)', st.misses || 0, 'amber'],
-      ['节省费用', '¥' + (st.total_saved_cost || 0).toFixed(2), 'green'],
-      ['内存条目', `${st.memory_entries || 0} / ${st.max_memory || 0}`, 'cyan'],
-      ['SQLite 条目', st.sqlite_entries || 0, 'dim'],
-    ].map(([l, v, c]) => `<div class="panel stat-card">
-      <div class="label"><span>${l}</span></div><div class="value ${c}">${v}</div></div>`).join('');
-    // 上游厂商缓存口径(转发到上游时命中其提示词缓存,与网关响应缓存是两套机制)
-    const up = st.upstream || {cache_read_tokens: 0, cache_creation_tokens: 0};
-    $('#ca-upstream-stats').innerHTML = [
-      ['厂商缓存读取', fmtTokens(up.cache_read_tokens), 'green'],
-      ['厂商缓存写入', fmtTokens(up.cache_creation_tokens), 'green'],
-    ].map(([l, v, c]) => `<div class="panel stat-card" style="flex:0 0 180px">
-      <div class="label"><span>${l}</span></div><div class="value ${c}" style="font-size:18px">${v}</div></div>`).join('')
-      + `<div class="panel" style="flex:1;padding:10px 14px">
-        <div class="dim" style="font-size:11px;line-height:1.5">
-          <b style="color:var(--text)">两套缓存口径</b>：「响应缓存」= 相同请求在 TTL 内直接回放缓存结果(零转发零费用,上方 KPI);
-          明细表状态列的 ⚡缓存 / 渠道列的「缓存·零转发」标记均指命中响应缓存;
-          「厂商缓存」= 转发到上游时命中上游厂商的提示词缓存(按 token 优惠计费,日志详情中的 ⚡ 厂商缓存标记属后者)。
-        </div></div>`;
-    // 趋势图
-    this._renderTrend(trend);
-    // 最近记录
-    const tb = $('#ca-tbody');
-    tb.innerHTML = recent.length ? recent.map(r => `<tr>
-      <td class="dim" style="font-size:12px;white-space:nowrap">${fmtTime(r.created_at)}</td>
-      <td class="mono" style="font-size:12px">${esc(r.model || '-')}</td>
-      <td><span class="tag info" style="padding:1px 6px;font-size:10px">${esc(r.kind || '-')}</span></td>
-      <td class="mono">${fmtTokens(r.prompt_tokens)}</td>
-      <td class="mono">${fmtTokens(r.completion_tokens)}</td>
-      <td style="color:var(--green)">¥${fmtCost(r.saved_cost)}</td>
-      <td class="dim" style="font-size:11px">${r.ttl_left > 0 ? Math.floor(r.ttl_left / 60) + 'm' + (r.ttl_left % 60) + 's' : '-'}</td>
-    </tr>`).join('') : `<tr><td colspan="7"><div class="empty-tip">暂无缓存命中记录</div></td></tr>`;
-    // 配置
-    $('#ca-enabled').value = cfg.cache_enabled === '0' ? '0' : '1';
-    $('#ca-ttl').value = cfg.cache_ttl || 300;
-    $('#ca-ttl-det').value = cfg.cache_ttl_deterministic || 3600;
-    $('#ca-mem').value = cfg.cache_max_memory || 500;
-    $('#ca-sqlite').value = cfg.cache_max_sqlite || 10000;
-  },
-  async _refreshTrend() {
-    const trend = await api(`/admin/api/cache/trend?hours=${this._hours}`);
-    this._renderTrend(trend);
-  },
-  _renderTrend(trend) {
-    disposeCharts();
-    const el = $('#ca-trend');
-    if (!el) return;
-    const chart = mkChart(el);
-    const data = trend || [];
-    // 后端按小时补零,始终渲染完整小时轴;全零也画出 0 基线而不是"暂无数据"
-    chart.setOption({
-      tooltip: {trigger: 'axis', backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
-        textStyle: {color: '#d7e6ff', fontSize: 11}},
-      grid: {left: 10, right: 16, top: 30, bottom: 10, containLabel: true},
-      legend: {data: ['命中数', '节省费用'], textStyle: CHART_TEXT, top: 0, right: 0},
-      xAxis: {type: 'category', data: data.map(t => t.hour.slice(5, 16)), ...CHART_AXIS},
-      yAxis: [{type: 'value', ...CHART_AXIS, name: '命中数'},
-              {type: 'value', ...CHART_AXIS, splitLine: {show: false}, name: '费用'}],
-      series: [
-        {name: '命中数', type: 'bar', data: data.map(t => t.hits), barWidth: 10,
-          itemStyle: {color: {type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-            colorStops: [{offset: 0, color: '#8b5cf6'}, {offset: 1, color: '#6366f1'}]}}},
-        {name: '节省费用', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'circle', symbolSize: 4,
-          data: data.map(t => t.saved_cost), lineStyle: {color: '#10e0a0', width: 2},
-          itemStyle: {color: '#10e0a0'}},
-      ]});
-  },
-};

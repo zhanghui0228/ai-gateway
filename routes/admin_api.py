@@ -801,8 +801,6 @@ def get_settings():
                      "breaker_cooldown", "probe_interval", "auto_models",
                      "auto_timeout", "auto_max_models",
                      "log_bodies", "log_body_max", "log_retention_days",
-                     "cache_enabled", "cache_stream", "cache_ttl",
-                     "cache_max_memory", "cache_max_sqlite",
                      "rate_limit_rpm", "rate_limit_rph",
                      "login_max_attempts", "login_lockout_duration",
                      "webhook_enabled", "webhook_url",
@@ -828,10 +826,6 @@ def set_settings():
             Setting.set(k, data[k])
     if "auto_models" in data:
         Setting.set("auto_models", data["auto_models"] or "")
-    # 缓存设置
-    for ck in ("cache_enabled", "cache_stream", "cache_ttl", "cache_max_memory", "cache_max_sqlite"):
-        if ck in data:
-            Setting.set(ck, str(data[ck]))
     # Webhook 设置
     if "webhook_enabled" in data:
         Setting.set("webhook_enabled", "1" if str(data["webhook_enabled"]) == "1" else "0")
@@ -872,83 +866,6 @@ def set_settings():
         Setting.set("update_check_interval", str(max(0, interval)))
     if "update_auto_restart" in data:
         Setting.set("update_auto_restart", "1" if str(data["update_auto_restart"]) == "1" else "0")
-    return jsonify({"ok": True})
-
-
-# ---------- 缓存管理 ----------
-
-@admin_bp.route("/cache/stats", methods=["GET"])
-@admin_required
-def cache_stats():
-    """缓存统计: 命中率/命中数/未命中数/节省费用/条目数
-    hits/misses 为 DB 累计口径(重启不丢);upstream 为厂商提示词缓存累计(对比用)"""
-    from gateway import cache as cache_mod
-    st = cache_mod.cache.stats()
-    # 计算累计节省费用
-    from sqlalchemy import func
-    from gateway.models import CacheEvent, UsageLog
-    saved = db.session.query(
-        func.coalesce(func.sum(CacheEvent.saved_cost), 0)).scalar()
-    st["total_saved_cost"] = round(float(saved or 0), 4)
-    # 上游厂商缓存口径:累计提示词缓存读/写 token,与网关响应缓存是两套不同机制
-    # 拆成两次独立单列 scalar() 查询: 多列 query().scalar() 只取首列且类型不稳, 易异常走兜底恒 0
-    try:
-        up_read = int((db.session.query(
-            func.coalesce(func.sum(UsageLog.cache_read_tokens), 0)).scalar()) or 0)
-        up_create = int((db.session.query(
-            func.coalesce(func.sum(UsageLog.cache_creation_tokens), 0)).scalar()) or 0)
-        st["upstream"] = {"cache_read_tokens": up_read, "cache_creation_tokens": up_create}
-    except Exception:
-        st["upstream"] = {"cache_read_tokens": 0, "cache_creation_tokens": 0}
-    return jsonify(st)
-
-
-@admin_bp.route("/cache/trend", methods=["GET"])
-@admin_required
-def cache_trend():
-    """缓存命中趋势(按小时)"""
-    from gateway import cache as cache_mod
-    hours = request.args.get("hours", 24, type=int)
-    return jsonify(cache_mod.cache.hit_trend(hours=hours))
-
-
-@admin_bp.route("/cache/recent", methods=["GET"])
-@admin_required
-def cache_recent():
-    """最近缓存命中记录"""
-    from gateway import cache as cache_mod
-    limit = request.args.get("limit", 50, type=int)
-    return jsonify(cache_mod.cache.recent_hits(limit=limit))
-
-
-@admin_bp.route("/cache", methods=["DELETE"])
-@admin_required
-def cache_clear():
-    """清空缓存"""
-    from gateway import cache as cache_mod
-    cache_mod.cache.clear()
-    return jsonify({"ok": True})
-
-
-@admin_bp.route("/cache/config", methods=["GET"])
-@admin_required
-def cache_get_config():
-    """查看缓存配置"""
-    keys = ("cache_enabled", "cache_stream", "cache_ttl", "cache_ttl_deterministic",
-            "cache_max_memory", "cache_max_sqlite")
-    return jsonify({k: Setting.get(k) for k in keys})
-
-
-@admin_bp.route("/cache/config", methods=["PUT"])
-@admin_required
-def cache_set_config():
-    """更新缓存配置"""
-    from flask import request as _rq
-    data = _rq.get_json(silent=True) or {}
-    for ck in ("cache_enabled", "cache_stream", "cache_ttl", "cache_ttl_deterministic",
-               "cache_max_memory", "cache_max_sqlite"):
-        if ck in data:
-            Setting.set(ck, str(data[ck]))
     return jsonify({"ok": True})
 
 
@@ -1001,8 +918,6 @@ def config_export():
     for k in ("default_timeout", "max_retry", "breaker_threshold", "breaker_cooldown",
               "probe_interval", "auto_models", "auto_timeout", "auto_max_models",
               "log_bodies", "log_body_max", "log_retention_days",
-              "cache_enabled", "cache_stream", "cache_ttl",
-              "cache_max_memory", "cache_max_sqlite",
               "rate_limit_rpm", "rate_limit_rph",
               "login_max_attempts", "login_lockout_duration",
               "webhook_enabled", "webhook_url",

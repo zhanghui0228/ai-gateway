@@ -362,31 +362,3 @@ class Preset(db.Model):
 
 
 # ---------- 响应缓存 ----------
-
-class ResponseCacheEntry(db.Model):
-    """响应缓存持久化存储（非流式存 response_body,流式存 chunks JSON）"""
-    __tablename__ = "response_cache"
-    cache_key = db.Column(db.String(64), primary_key=True)   # SHA256 hex
-    kind = db.Column(db.String(16), default="")              # chat/completions/embeddings
-    model = db.Column(db.String(128), default="")
-    response_body = db.Column(db.Text)                        # 非流式: JSON 响应体
-    chunks = db.Column(db.Text)                               # 流式: SSE data 字符串数组(JSON)
-    prompt_tokens = db.Column(db.Integer, default=0)
-    completion_tokens = db.Column(db.Integer, default=0)
-    created_at = db.Column(db.DateTime, default=utcnow)
-    expires_at = db.Column(db.DateTime, index=True)           # TTL 过期时间
-    hit_count = db.Column(db.Integer, default=0)
-    last_hit_at = db.Column(db.DateTime)
-
-
-class CacheEvent(db.Model):
-    """缓存命中事件记录(供趋势图和最近记录查询)"""
-    __tablename__ = "cache_events"
-    id = db.Column(db.Integer, primary_key=True)
-    created_at = db.Column(db.DateTime, default=utcnow, index=True)
-    cache_key = db.Column(db.String(64), index=True)
-    model = db.Column(db.String(128), default="")
-    kind = db.Column(db.String(16), default="")
-    prompt_tokens = db.Column(db.Integer, default=0)
-    completion_tokens = db.Column(db.Integer, default=0)
-    saved_cost = db.Column(db.Float, default=0.0)
