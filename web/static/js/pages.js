@@ -1481,174 +1481,6 @@ Pages.settings = {
   },
 };
 
-/* ================= 总览 ================= */
-Pages.dashboard = {
-  async render(main) {
-    main.innerHTML = `
-      <div class="page-head"><h2>总览</h2>
-        <div class="actions">
-          <button class="btn ghost" onclick="location.href='/docs'">接口文档</button>
-          <button class="btn ghost" onclick="location.href='/screen'">打开大屏 →</button></div></div>
-      <div class="stat-grid" id="d-stats"></div>
-      <div class="chart-flex">
-        <div class="panel chart-panel"><h3>24 小时调用趋势</h3><div id="d-trend" style="height:280px"></div></div>
-        <div class="panel chart-panel"><h3>渠道健康(定时探测)</h3><div id="d-channels" style="height:280px;overflow-y:auto"></div></div>
-      </div>
-      <div class="chart-flex" style="margin-top:18px">
-        <div class="panel chart-panel"><h3>调用时段热点(近7天 · 周x24h)</h3><div id="d-heat" style="height:380px"></div></div>
-      </div>`;
-    await this.refresh();
-  },
-  async refresh() {
-    // 独立请求:单个接口失败不影响其他渲染
-    let ov, trend, channels, heat;
-    try { ov = await api('/admin/api/stats/overview?days=1'); } catch (e) { ov = {}; }
-    try { trend = await api('/admin/api/stats/trend?days=1'); } catch (e) { trend = []; }
-    try { channels = await api('/admin/api/channels'); } catch (e) { channels = []; }
-    try { heat = await api('/admin/api/stats/hourly_heatmap?days=7'); } catch (e) { heat = []; }
-    $('#d-stats').innerHTML = [
-      ['今日调用', ov.total_calls, 'cyan'], ['今日 Tokens', fmtTokens(ov.today_tokens), 'purple'],
-      ['今日费用', fmtCost(ov.today_cost), 'amber'], ['平均延迟', fmtMs(ov.avg_latency_ms), 'amber'],
-      ['在线渠道', `${ov.online_channels} / ${ov.total_channels}`, 'green'],
-    ].map(([l, v, c]) => `<div class="panel stat-card">
-      <div class="label"><span>${l}</span></div><div class="value ${c}">${v}</div></div>`).join('');
-    disposeCharts();
-    const cm = mkChart($('#c-model'));
-    const metric = this._modelMetric || 'tokens';
-    const sorted = [...byModel].sort((a, b) => (b[metric] || 0) - (a[metric] || 0));
-    cm.setOption({
-      tooltip: {trigger: 'axis', backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)', textStyle: {color: '#d7e6ff', fontSize: 11},
-        formatter: params => { const p = params[0]; return `${p.name}<br/>${metric === 'tokens' ? 'Tokens' : '调用次数'}: ${metric === 'tokens' ? fmtTokens(p.value) : p.value}`; }},
-      grid: {left: 10, right: 30, top: 10, bottom: 10, containLabel: true},
-      xAxis: {type: 'value', ...CHART_AXIS},
-      yAxis: {type: 'category', data: sorted.map(x => x.name).reverse(),
-        axisLabel: {...CHART_TEXT, width: 110, overflow: 'truncate'}},
-      series: [{type: 'bar', data: sorted.map(x => x[metric] || 0).reverse(),
-        itemStyle: {color: {type: 'linear', x: 0, y: 0, x2: 1, y2: 0,
-          colorStops: [{offset: 0, color: '#3b82f6'}, {offset: 1, color: '#00e5ff'}]}},
-        barWidth: 12}]});
-    const cc = mkChart($('#c-chan'));
-    cc.setOption({
-      tooltip: {trigger: 'item', backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)', textStyle: {color: '#d7e6ff', fontSize: 11}},
-      legend: {bottom: 0, textStyle: CHART_TEXT, itemWidth: 10, itemHeight: 10},
-      series: [{type: 'pie', radius: ['45%', '70%'], center: ['50%', '45%'],
-        data: byChan.map(x => ({name: x.name, value: x.calls})),
-        label: {color: '#6b83a8', fontSize: 11},
-        itemStyle: {borderColor: '#060b18', borderWidth: 2}}]});
-    const hmc = mkChart($('#u-heat'));
-    const dlabels = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
-    // 完整 7x24 矩阵,0 值也占位;横轴=星期,纵轴=小时
-    const uhours = Array.from({length: 24}, (_, i) => String(i).padStart(2, '0'));
-    const hmData = [];
-    let maxV = 0;
-    (heat || []).forEach((row, di) => (row || []).forEach((v, hi) => {
-      const val = Number(v) || 0;
-      hmData.push([di, hi, val]);
-      maxV = Math.max(maxV, val);
-    }));
-    hmc.setOption({
-      tooltip: {backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
-        textStyle: {color: '#d7e6ff', fontSize: 11},
-        formatter: p => `${dlabels[p.data[0]]} ${p.data[1]}:00<br/>调用 ${p.data[2]} 次`},
-      grid: {left: 44, right: 40, top: 10, bottom: 20, containLabel: true},
-      xAxis: {type: 'category', data: dlabels, ...CHART_AXIS},
-      yAxis: {type: 'category', data: uhours, ...CHART_AXIS,
-        axisLabel: {...CHART_TEXT, interval: 1}},
-      visualMap: {min: 0, max: Math.max(1, maxV), orient: 'vertical', right: 0, top: 'center',
-        itemWidth: 10, itemHeight: 100, textStyle: CHART_TEXT,
-        inRange: {color: ['#0d1630', '#3b82f6', '#00e5ff', '#10e0a0']}},
-      series: [{type: 'heatmap', data: hmData,
-        itemStyle: {borderColor: '#060b18', borderWidth: 1, borderRadius: 2},
-        emphasis: {itemStyle: {shadowBlur: 8, shadowColor: 'rgba(0,229,255,.5)'}}}]});
-    /* 每日用量图:tokens 柱状 + 调用折线 + 模型数次折线 */
-    const dc = mkChart($('#u-daily'));
-    const dd = daily.daily || [];
-    if (dd.length) {
-      dc.setOption({
-        tooltip: {trigger: 'axis', backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
-          textStyle: {color: '#d7e6ff', fontSize: 11}},
-        grid: {left: 10, right: 14, top: 34, bottom: 10, containLabel: true},
-        legend: {data: ['Tokens', '缓存命中', '总调用', '模型数'], textStyle: CHART_TEXT,
-          top: 0, right: 0, itemWidth: 12, itemHeight: 8},
-        xAxis: {type: 'category', data: dd.map(x => x.date.slice(5)), ...CHART_AXIS},
-        yAxis: [{type: 'value', ...CHART_AXIS},
-                {type: 'value', ...CHART_AXIS, splitLine: {show: false}}],
-        series: [
-          {name: 'Tokens', type: 'bar', data: dd.map(x => x.total_tokens), barWidth: 12,
-            itemStyle: {color: {type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-              colorStops: [{offset: 0, color: '#00e5ff'}, {offset: 1, color: '#3b82f6'}]}}},
-          {name: '缓存命中', type: 'bar', data: dd.map(x => x.cache_tokens), barWidth: 12,
-            itemStyle: {color: '#8b5cf6'}},
-          {name: '总调用', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'circle', symbolSize: 5,
-            data: dd.map(x => x.calls), lineStyle: {color: '#10e0a0', width: 2},
-            itemStyle: {color: '#10e0a0'}},
-          {name: '模型数', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'none',
-            data: dd.map(x => x.models), lineStyle: {color: '#ffb020', width: 1.5, type: 'dashed'},
-            itemStyle: {color: '#ffb020'}},
-        ]});
-    } else {
-      dc.setOption({title: {text: '暂无数据', left: 'center', top: 'middle', textStyle: CHART_TEXT}});
-    }
-    this._dailyModelCalls = daily.model_calls || {};
-  },
-  async refresh() {
-    const days = $('#u-days') ? +$('#u-days').value : 7;
-    this.logState.days = days;
-    let ov, byModel, byChan, heat, daily;
-    try { ov = await api(`/admin/api/stats/overview?days=${days}`); } catch (e) { ov = {}; }
-    try { byModel = await api(`/admin/api/stats/by_model?days=${days}`); } catch (e) { byModel = []; }
-    try { byChan = await api(`/admin/api/stats/by_channel?days=${days}`); } catch (e) { byChan = []; }
-    try { heat = await api('/admin/api/stats/hourly_heatmap?days=7'); } catch (e) { heat = []; }
-    try { daily = await api('/admin/api/stats/daily?days=14'); } catch (e) { daily = {}; }
-    this._lastArgs = [ov, byModel, byChan, heat, daily];
-    this.refreshCharts(ov, byModel, byChan, heat, daily);
-    await this._refreshLogTable();
-  },
-  async _refreshLogTable() {
-    const {page, size} = this.logState;
-    const r = await api(`/admin/api/stats/logs?page=${page}&page_size=${size}`);
-    this.logState.total = r.total || 0;
-    const logs = r.items || [];
-    const tb = $('#log-tbody');
-    tb.innerHTML = logs.length ? logs.map(l => `<tr>
-      <td class="dim" style="font-size:12px;white-space:nowrap">${fmtTime(l.created_at)}</td>
-      <td>${esc(l.key_name || '-')}</td>
-      <td>${esc(l.channel_name || '-')}${l.cache_hit ? ' <span class="tag" style="background:rgba(139,92,246,.2);color:#a78bfa;font-size:10px;padding:0 4px">缓存·零转发</span>' : ''}</td>
-      <td class="mono" style="font-size:12px">${esc(l.model || '-')}</td>
-      <td class="mono">${fmtTokens(l.prompt_tokens)}</td>
-      <td class="mono">${fmtTokens(l.completion_tokens)}</td>
-      <td class="mono">${l.cache_hit
-        ? '<span class="tag" style="background:rgba(139,92,246,.2);color:#a78bfa;padding:1px 6px;font-size:10px">⚡ 缓存</span>'
-        : (l.cache_read_tokens || l.cache_creation_tokens
-          ? `<span style="color:var(--purple)" title="读 ${l.cache_read_tokens || 0} / 写 ${l.cache_creation_tokens || 0}">⚡${fmtTokens((l.cache_read_tokens || 0) + (l.cache_creation_tokens || 0))}</span>`
-          : '<span class="dim">-</span>')}</td>
-      <td class="mono">${fmtTokens(l.total_tokens)}${l.estimated ? ' <span class="dim" title="估算">≈</span>' : ''}</td>
-      <td>${fmtCost(l.cost)}</td>
-      <td class="mono">${fmtMs(l.latency_ms)}</td>
-      <td>${l.cache_hit ? '<span class="tag" style="background:rgba(139,92,246,.2);color:#a78bfa">⚡ 缓存</span>'
-        : l.success ? '<span class="tag ok">' + l.status_code + '</span>'
-        : `<span class="tag err">${l.status_code || 'ERR'}</span>${l.retries ? ' <span class="tag warn">重试' + l.retries + '</span>' : ''}`}</td>
-      <td class="dim" style="font-size:11px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(l.error)}">${esc(l.error || '-')}</td>
-    </tr>`).join('') : `<tr><td colspan="12"><div class="empty-tip">暂无调用记录</div></td></tr>`;
-    /* 分页栏 */
-    const pages = Math.max(1, Math.ceil(this.logState.total / size));
-    const pag = $('#u-log-pagination');
-    pag.innerHTML = `
-      <span class="dim" style="font-size:12px">共 ${this.logState.total} 条</span>
-      <select id="u-size" style="width:auto">
-        <option value="20" ${size === 20 ? 'selected' : ''}>20条/页</option>
-        <option value="50" ${size === 50 ? 'selected' : ''}>50条/页</option>
-        <option value="100" ${size === 100 ? 'selected' : ''}>100条/页</option>
-      </select>
-      <button class="btn ghost" id="u-prev" style="padding:3px 10px;font-size:12px" ${page <= 1 ? 'disabled' : ''}>‹ 上一页</button>
-      <span style="font-size:12px">${page} / ${pages}</span>
-      <button class="btn ghost" id="u-next" style="padding:3px 10px;font-size:12px" ${page >= pages ? 'disabled' : ''}>下一页 ›</button>`;
-    $('#u-size').onchange = () => { this.logState.size = +$('#u-size').value; this.logState.page = 1; this._refreshLogTable(); };
-    $('#u-prev').onclick = () => { if (this.logState.page > 1) { this.logState.page--; this._refreshLogTable(); } };
-    $('#u-next').onclick = () => { if (this.logState.page < pages) { this.logState.page++; this._refreshLogTable(); } };
-  },
-};
-
 /* ================= 调用日志 ================= */
 Pages.logs = {
   state: {page: 1, size: 20},
@@ -2233,17 +2065,23 @@ Pages.dashboard = {
         <div class="panel chart-panel"><h3>渠道健康(定时探测)</h3><div id="d-channels" style="height:280px;overflow-y:auto"></div></div>
       </div>
       <div class="chart-flex" style="margin-top:18px">
+        <div class="panel chart-panel"><h3>模型调用量排行(近7天)</h3><div id="d-model-rank" style="height:300px"></div></div>
+        <div class="panel chart-panel"><h3>每日费用趋势(近14天)</h3><div id="d-daily-cost" style="height:300px"></div></div>
+      </div>
+      <div class="chart-flex" style="margin-top:18px">
         <div class="panel chart-panel"><h3>调用时段热点(近7天 · 周x24h)</h3><div id="d-heat" style="height:380px"></div></div>
       </div>`;
     await this.refresh();
   },
   async refresh() {
     // 独立请求:单个接口失败不影响其他渲染
-    let ov, trend, channels, heat;
+    let ov, trend, channels, heat, byModel, daily;
     try { ov = await api('/admin/api/stats/overview?days=1'); } catch (e) { ov = {}; }
     try { trend = await api('/admin/api/stats/trend?days=1'); } catch (e) { trend = []; }
     try { channels = await api('/admin/api/channels'); } catch (e) { channels = []; }
     try { heat = await api('/admin/api/stats/hourly_heatmap?days=7'); } catch (e) { heat = []; }
+    try { byModel = await api('/admin/api/stats/by_model?days=7'); } catch (e) { byModel = []; }
+    try { daily = await api('/admin/api/stats/daily?days=14'); } catch (e) { daily = {}; }
     $('#d-stats').innerHTML = [
       ['今日调用', ov.total_calls, 'cyan'], ['今日 Tokens', fmtTokens(ov.today_tokens), 'purple'],
       ['今日费用', fmtCost(ov.today_cost), 'amber'], ['平均延迟', fmtMs(ov.avg_latency_ms), 'amber'],
@@ -2251,6 +2089,8 @@ Pages.dashboard = {
     ].map(([l, v, c]) => `<div class="panel stat-card">
       <div class="label"><span>${l}</span></div><div class="value ${c}">${v}</div></div>`).join('');
     disposeCharts();
+
+    /* 24h 调用趋势 */
     const chart = mkChart($('#d-trend'));
     chart.setOption({
       tooltip: {trigger: 'axis', backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
@@ -2267,6 +2107,8 @@ Pages.dashboard = {
           areaStyle: {color: {type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
             colorStops: [{offset: 0, color: 'rgba(0,229,255,.25)'}, {offset: 1, color: 'rgba(0,229,255,0)'}]}}},
       ]});
+
+    /* 渠道健康 */
     $('#d-channels').innerHTML = channels.length ? channels.map(c => {
       const dot = !c.enabled ? 'off' : (c.breaker_state === 'open' ? 'breaker' : c.breaker_state === 'half_open' ? 'warn' : 'on');
       const state = !c.enabled ? '停用' : c.breaker_state === 'open' ? '熔断中' : c.breaker_state === 'half_open' ? '半开探测' : '正常';
@@ -2282,10 +2124,52 @@ Pages.dashboard = {
         <span class="dim" style="font-size:12px">${state}</span></div>`;
     }).join('') : `<div class="empty-tip">暂无渠道</div>`;
 
+    /* 模型调用量排行(横向柱状图) */
+    const mrc = mkChart($('#d-model-rank'));
+    const mSorted = [...(byModel || [])].sort((a, b) => (b.calls || 0) - (a.calls || 0)).slice(0, 8);
+    mrc.setOption({
+      tooltip: {trigger: 'axis', backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
+        textStyle: {color: '#d7e6ff', fontSize: 11},
+        formatter: p => `${p.name}<br/>调用: ${p.value} 次`},
+      grid: {left: 10, right: 30, top: 10, bottom: 10, containLabel: true},
+      xAxis: {type: 'value', ...CHART_AXIS},
+      yAxis: {type: 'category', data: mSorted.map(x => x.name).reverse(),
+        axisLabel: {...CHART_TEXT, width: 120, overflow: 'truncate'}},
+      series: [{type: 'bar', data: mSorted.map(x => x.calls || 0).reverse(),
+        itemStyle: {color: {type: 'linear', x: 0, y: 0, x2: 1, y2: 0,
+          colorStops: [{offset: 0, color: '#3b82f6'}, {offset: 1, color: '#00e5ff'}]}},
+        barWidth: 12,
+        label: {show: true, position: 'right', color: '#6b83a8', fontSize: 10}}]});
+
+    /* 每日费用趋势(折线图) */
+    const dcc = mkChart($('#d-daily-cost'));
+    const dd = (daily && daily.daily) || [];
+    if (dd.length) {
+      dcc.setOption({
+        tooltip: {trigger: 'axis', backgroundColor: '#0d1630', borderColor: 'rgba(0,229,255,.4)',
+          textStyle: {color: '#d7e6ff', fontSize: 11},
+          formatter: p => { let s = p[0].axisValue; p.forEach(i => { s += `<br/>${i.marker} ${i.seriesName}: ${i.value}`; }); return s; }},
+        grid: {left: 10, right: 16, top: 30, bottom: 10, containLabel: true},
+        legend: {data: ['费用', '调用'], textStyle: CHART_TEXT, top: 0, right: 0, itemWidth: 12, itemHeight: 8},
+        xAxis: {type: 'category', data: dd.map(x => x.date.slice(5)), ...CHART_AXIS},
+        yAxis: [{type: 'value', ...CHART_AXIS, axisLabel: {...CHART_TEXT, formatter: v => '¥' + v}},
+                {type: 'value', ...CHART_AXIS, splitLine: {show: false}}],
+        series: [
+          {name: '费用', type: 'line', smooth: true, symbol: 'circle', symbolSize: 5,
+            data: dd.map(x => x.cost), lineStyle: {color: '#f59e0b', width: 2},
+            itemStyle: {color: '#f59e0b'},
+            areaStyle: {color: {type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+              colorStops: [{offset: 0, color: 'rgba(245,158,11,.2)'}, {offset: 1, color: 'rgba(245,158,11,0)'}]}}},
+          {name: '调用', type: 'bar', yAxisIndex: 1, data: dd.map(x => x.calls), barWidth: 10,
+            itemStyle: {color: 'rgba(59,130,246,.4)'}},
+        ]});
+    } else {
+      dcc.setOption({title: {text: '暂无数据', left: 'center', top: 'middle', textStyle: CHART_TEXT}});
+    }
+
     /* 调用时段热力图(周 x 24h) */
     const hmc = mkChart($('#d-heat'));
     const days = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
-    // 完整 7x24 矩阵,0 值也占位(浅底块 + 深色描边区分,视觉上不消失);横轴=星期,纵轴=小时
     const hours = Array.from({length: 24}, (_, i) => String(i).padStart(2, '0'));
     const hmData = [];
     let maxV = 0;
