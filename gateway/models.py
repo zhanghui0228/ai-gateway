@@ -105,6 +105,8 @@ class Channel(db.Model):
     custom_fields = db.Column(JSONText, default=dict)
     # 额外的 azure 参数
     azure_api_version = db.Column(db.String(32), default="2024-10-21")
+    # API 版本路径前缀(默认 v1,部分厂商用 v2/v4 等),自动拼接到路径中 /{api_version}/chat/completions
+    api_version = db.Column(db.String(16), default="v1")
 
     # L1 定时探测结果(免费模型列表探测,零 token 消耗)
     probe_ok = db.Column(db.Boolean, nullable=True)   # None = 尚未探测
@@ -151,6 +153,7 @@ class Channel(db.Model):
             "pricing_override": self.pricing_override or {},
             "timeout": self.timeout, "note": self.note,
             "azure_api_version": self.azure_api_version,
+            "api_version": self.api_version or "v1",
             "probe_ok": self.probe_ok, "probe_at": self.probe_at,
             "probe_latency": self.probe_latency, "probe_error": self.probe_error,
             "probe_mode": self.probe_mode or "models",

@@ -93,7 +93,7 @@ class GeminiAdapter(BaseAdapter):
     name = "gemini"
 
     def build_request(self, channel, api_key, model, kind, openai_body):
-        base = (channel.base_url or "").rstrip("/")
+        base = self._clean_base_url(channel.base_url)
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["x-goog-api-key"] = api_key
@@ -161,7 +161,7 @@ class GeminiAdapter(BaseAdapter):
                 "cache_creation": 0}
 
     def models_request(self, channel, api_key):
-        base = (channel.base_url or "").rstrip("/")
+        base = self._clean_base_url(channel.base_url)
         headers = {}
         if api_key:
             headers["x-goog-api-key"] = api_key

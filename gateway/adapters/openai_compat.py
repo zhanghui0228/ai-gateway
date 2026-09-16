@@ -10,7 +10,8 @@ class OpenAICompatAdapter(BaseAdapter):
     name = "openai_compat"
 
     def build_request(self, channel, api_key, model, kind, openai_body):
-        base = (channel.base_url or "").rstrip("/")
+        base = self._clean_base_url(channel.base_url)
+        ver = self._version_prefix(channel)
         body = dict(openai_body)
         body["model"] = model
         stream = bool(body.get("stream"))
@@ -19,19 +20,19 @@ class OpenAICompatAdapter(BaseAdapter):
             body["stream_options"] = {"include_usage": True}
 
         if kind == self.KIND_CHAT:
-            path = "/v1/chat/completions"
+            path = f"{ver}/chat/completions"
         elif kind == self.KIND_COMPLETIONS:
-            path = "/v1/completions"
+            path = f"{ver}/completions"
         elif kind == self.KIND_EMBEDDINGS:
-            path = "/v1/embeddings"
+            path = f"{ver}/embeddings"
             body.pop("stream", None)
             stream = False
         elif kind == self.KIND_IMAGES:
-            path = "/v1/images/generations"
+            path = f"{ver}/images/generations"
             body.pop("stream", None)
             stream = False
         else:
-            path = "/v1/chat/completions"
+            path = f"{ver}/chat/completions"
 
         headers = {"Content-Type": "application/json"}
         if api_key:
@@ -41,7 +42,7 @@ class OpenAICompatAdapter(BaseAdapter):
     def models_fallback_request(self, channel):
         """兜底模型清单:new-api / one-api 系中转站的公开定价接口,无需鉴权。
         用于站点禁用 /v1/models(如 AgentRouter 公益站)时仍能自动获取模型。"""
-        base = (channel.base_url or "").rstrip("/")
+        base = self._clean_base_url(channel.base_url)
         return [(base + "/api/pricing", {})]
 
     @staticmethod

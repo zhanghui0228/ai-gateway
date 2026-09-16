@@ -525,7 +525,8 @@ def stats_trend():
 def stats_model():
     days = request.args.get("days", 30, type=int)
     return jsonify(stats.by_model(days=days, start=request.args.get("start"),
-                                  end=request.args.get("end")))
+                                  end=request.args.get("end"),
+                                  endpoint=request.args.get("endpoint")))
 
 
 @admin_bp.route("/stats/by_channel", methods=["GET"])
@@ -688,7 +689,8 @@ def stats_hot_models():
 def stats_daily():
     """按天统计:每日 tokens / 调用 / 模型数"""
     days = request.args.get("days", 14, type=int)
-    daily = stats.daily_usage(days=days)
+    ep = request.args.get("endpoint")
+    daily = stats.daily_usage(days=days, endpoint=ep)
     model_calls = stats.daily_model_calls(days=days)
     return jsonify({"daily": daily, "model_calls": model_calls})
 

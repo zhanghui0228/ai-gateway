@@ -154,8 +154,9 @@ class AnthropicAdapter(BaseAdapter):
             body["stream"] = True
         headers = {"Content-Type": "application/json",
                    "x-api-key": api_key, "anthropic-version": "2023-06-01"}
-        base = (channel.base_url or "").rstrip("/")
-        return UpstreamRequest(base + "/v1/messages", headers, body, stream)
+        base = self._clean_base_url(channel.base_url)
+        ver = self._version_prefix(channel)
+        return UpstreamRequest(base + ver + "/messages", headers, body, stream)
 
     def adapt_response(self, upstream_json, kind):
         return _anthropic_to_openai_message(upstream_json or {})
@@ -173,9 +174,10 @@ class AnthropicAdapter(BaseAdapter):
                 "cache_creation": int(u.get("cache_creation_input_tokens") or 0)}
 
     def models_request(self, channel, api_key):
-        base = (channel.base_url or "").rstrip("/")
+        base = self._clean_base_url(channel.base_url)
+        ver = self._version_prefix(channel)
         headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
-        return base + "/v1/models", headers
+        return base + ver + "/models", headers
 
     def transform_stream(self, sse_lines):
         """anthropic SSE 事件流 -> openai chunk 流"""

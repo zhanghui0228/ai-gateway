@@ -6,7 +6,7 @@ class AzureAdapter(BaseAdapter):
     name = "azure"
 
     def build_request(self, channel, api_key, model, kind, openai_body):
-        base = (channel.base_url or "").rstrip("/")
+        base = self._clean_base_url(channel.base_url)
         version = channel.azure_api_version or "2024-10-21"
         body = dict(openai_body)
         body.pop("model", None)  # 部署名已在 URL,无需 body model
@@ -33,7 +33,7 @@ class AzureAdapter(BaseAdapter):
         return UpstreamRequest(f"{base}{path}?api-version={version}", headers, body, stream)
 
     def models_request(self, channel, api_key):
-        base = (channel.base_url or "").rstrip("/")
+        base = self._clean_base_url(channel.base_url)
         version = channel.azure_api_version or "2024-10-21"
         headers = {"api-key": api_key} if api_key else {}
         return f"{base}/openai/deployments?api-version={version}", headers

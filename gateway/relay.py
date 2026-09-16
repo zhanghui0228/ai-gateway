@@ -58,18 +58,24 @@ def _is_model_not_found(status_code, response_text):
 
 
 def _read_request_text(openai_body):
-    """粗略提取请求文本用于 usage 估算兜底"""
-    msgs = openai_body.get("messages") or []
+    """粗略提取请求文本用于 usage 估算兜底(支持 chat/completions/embeddings/images)"""
     total = []
+    # chat: messages[].content
+    msgs = openai_body.get("messages") or []
     for m in msgs:
         c = m.get("content")
         if isinstance(c, str):
             total.append(c)
         elif c:
             total.extend(p.get("text", "") for p in c if isinstance(p, dict))
+    # completions / images: prompt (string | string[])
     if openai_body.get("prompt"):
         p = openai_body["prompt"]
         total.append(p if isinstance(p, str) else " ".join(map(str, p)))
+    # embeddings: input (string | string[])
+    inp = openai_body.get("input")
+    if inp:
+        total.append(inp if isinstance(inp, str) else " ".join(map(str, inp)))
     return " ".join(total)
 
 

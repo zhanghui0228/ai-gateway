@@ -44,6 +44,21 @@ class BaseAdapter:
     KIND_EMBEDDINGS = "embeddings"
     KIND_IMAGES = "images"
 
+    @staticmethod
+    def _clean_base_url(url):
+        """标准化 base_url:去除末尾 /vN 版本前缀,避免拼接路径后出现 /vN/vN/..."""
+        url = (url or "").rstrip("/")
+        # 去除末尾 /v1 /v2 /v4 等版本前缀
+        import re
+        url = re.sub(r'/v\d+$', '', url).rstrip("/")
+        return url
+
+    @staticmethod
+    def _version_prefix(channel):
+        """获取 API 版本路径前缀,如 'v1' -> '/v1'"""
+        v = (getattr(channel, "api_version", None) or "v1").strip().lstrip("/")
+        return "/" + v if v else ""
+
     def build_request(self, channel, api_key, model, kind, openai_body):
         raise NotImplementedError
 
@@ -74,7 +89,7 @@ class BaseAdapter:
     def models_request(self, channel, api_key):
         """模型列表端点(免费,不消耗 token):用于定时健康探测与自动获取模型。
         返回 (url, headers)"""
-        base = (channel.base_url or "").rstrip("/")
+        base = self._clean_base_url(channel.base_url)
         headers = {}
         if api_key:
             headers["Authorization"] = "Bearer " + api_key

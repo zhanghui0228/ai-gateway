@@ -45,6 +45,11 @@ def overview(days=1):
     today_cost = db.session.query(
         func.coalesce(func.sum(UsageLog.cost), 0)).filter(
         UsageLog.created_at >= today0).scalar()
+    # 按端点类型分组统计(chat/completions/embeddings/images)
+    ep_rows = (db.session.query(UsageLog.endpoint, func.count(UsageLog.id))
+               .filter(UsageLog.created_at >= start)
+               .group_by(UsageLog.endpoint).all())
+    by_endpoint = {r[0] or "chat": r[1] for r in ep_rows}
     return {
         "total_calls": total, "success_calls": success,
         "success_rate": round(success / total * 100, 1) if total else 100.0,
@@ -52,6 +57,7 @@ def overview(days=1):
         "cost": round(float(cost), 4), "today_cost": round(float(today_cost), 4),
         "avg_latency_ms": int(avg_latency),
         "online_channels": online, "total_channels": channels,
+        "by_endpoint": by_endpoint,
     }
 
 
@@ -90,14 +96,16 @@ def hourly_trend(days=1):
     return result
 
 
-def _group_by(field, days=30, start=None, end=None):
+def _group_by(field, days=30, start=None, end=None, endpoint=None):
     start_dt, end_dt = _range_or_default(start, end, days=days)
-    rows = (db.session.query(field, func.count(UsageLog.id),
-                             func.coalesce(func.sum(UsageLog.total_tokens), 0),
-                             func.coalesce(func.sum(UsageLog.cost), 0),
-                             func.coalesce(func.avg(UsageLog.latency_ms), 0),
-                             func.sum(db.case((UsageLog.success.is_(True), 1), else_=0)))
-            .filter(UsageLog.created_at >= start_dt)
+    q = UsageLog.query.filter(UsageLog.created_at >= start_dt)
+    if endpoint:
+        q = q.filter(UsageLog.endpoint == endpoint)
+    rows = (q.with_entities(field, func.count(UsageLog.id),
+                            func.coalesce(func.sum(UsageLog.total_tokens), 0),
+                            func.coalesce(func.sum(UsageLog.cost), 0),
+                            func.coalesce(func.avg(UsageLog.latency_ms), 0),
+                            func.sum(db.case((UsageLog.success.is_(True), 1), else_=0)))
             .group_by(field).all())
     return [{"name": r[0] or "未知", "calls": r[1], "tokens": int(r[2]),
              "cost": round(float(r[3]), 4), "avg_latency_ms": int(r[4]),
@@ -105,8 +113,8 @@ def _group_by(field, days=30, start=None, end=None):
             for r in rows]
 
 
-def by_model(days=30, start=None, end=None):
-    return _group_by(UsageLog.model, days, start, end)
+def by_model(days=30, start=None, end=None, endpoint=None):
+    return _group_by(UsageLog.model, days, start, end, endpoint=endpoint)
 
 
 def by_channel(days=30, start=None, end=None):
@@ -131,10 +139,14 @@ def recent_logs(limit=50, only_success=None, page=None, page_size=None):
     return [l.to_dict() for l in q.limit(min(limit, 500)).all()]
 
 
-def daily_usage(days=14):
-    """按天统计:每天 tokens(输入/输出/缓存)、调用数、成功数、费用、活跃模型数,零值填充"""
+def daily_usage(days=14, endpoint=None):
+    """按天统计:每天 tokens(输入/输出/缓存)、调用数、成功数、费用、活跃模型数,零值填充
+    endpoint: 过滤端点类型(chat/completions/embeddings/images),None=全部"""
     start, _ = _range_or_default(days=days)
-    rows = (db.session.query(
+    q = UsageLog.query.filter(UsageLog.created_at >= start)
+    if endpoint:
+        q = q.filter(UsageLog.endpoint == endpoint)
+    rows = (q.with_entities(
                 func.date(UsageLog.created_at),
                 func.coalesce(func.sum(UsageLog.total_tokens), 0),
                 func.coalesce(func.sum(UsageLog.prompt_tokens), 0),
@@ -144,7 +156,6 @@ def daily_usage(days=14):
                 func.sum(db.case((UsageLog.success.is_(True), 1), else_=0)),
                 func.coalesce(func.sum(UsageLog.cost), 0),
                 func.count(func.distinct(UsageLog.model)))
-            .filter(UsageLog.created_at >= start)
             .group_by(func.date(UsageLog.created_at))
             .order_by(func.date(UsageLog.created_at)).all())
     # 构建有数据的字典

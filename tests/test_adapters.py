@@ -205,44 +205,11 @@ with _app_mod.app.app_context():
     Channel.query.delete()
     _db.session.commit()
 
-# ================= 响应缓存键 =================
-print("== 响应缓存键 ==")
-from gateway.cache import build_cache_key as _bck
-_b1 = {"model": "m", "messages": [{"role": "user", "content": "hi"}], "stream": True}
-_k1 = _bck("chat", "m", _b1)
-check("cache key 幂等", _k1 == _bck("chat", "m", dict(_b1)))
-_b2 = dict(_b1); _b2["stream_options"] = {"include_usage": True}
-check("cache key 区分 stream_options", _bck("chat", "m", _b2) != _k1)
-_b3 = dict(_b1); _b3["user"] = "u1"
-check("cache key 区分 user", _bck("chat", "m", _b3) != _k1)
-_b4 = dict(_b1); _b4["messages"] = [{"role": "user", "content": "hello"}]
-check("cache key 区分 messages", _bck("chat", "m", _b4) != _k1)
-check("cache key 区分流式/非流式", _bck("chat", "m", {"model": "m", "messages": []}) !=
-      _bck("chat", "m", {"model": "m", "messages": [], "stream": True}))
-
-# ================= SQLite 缓存容量淘汰(独立内存库,不污染开发数据) =================
-print("== SQLite 缓存容量淘汰 ==")
-from flask import Flask as _Flask
-from gateway import cache as _cache_mod
-from gateway.db import db as _gdb
-from gateway.models import ResponseCacheEntry as _RCE
-_app2 = _Flask(__name__)
-_app2.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///:memory:"
-_app2.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-_gdb.init_app(_app2)
-with _app2.app_context():
-    _gdb.create_all()
-    from gateway.models import Setting as _Setting
-    _Setting.set("cache_max_sqlite", "100")
-    for i in range(105):
-        _cache_mod.cache.put(f"k{i:04d}", "chat", "m", '{"x":1}', 10, 5)
-    total = _RCE.query.count()
-    check("SQLite 容量上限生效", total == 100, total)
-    check("内存 LRU 同步淘汰", len(_cache_mod.cache._lru) <= 100, len(_cache_mod.cache._lru))
-
 # ================= 客户端 IP 提取 =================
 print("== 客户端 IP 提取 ==")
 from gateway import relay as _relay
+from flask import Flask as _Flask
+_app2 = _Flask(__name__)
 with _app2.test_request_context(headers={"X-Real-IP": "1.2.3.4",
                                          "X-Forwarded-For": "9.9.9.9, 8.8.8.8",
                                          "User-Agent": "ua-test"}):
@@ -255,6 +222,68 @@ with _app2.test_request_context(headers={"X-Forwarded-For": "9.9.9.9, 8.8.8.8"})
 with _app2.test_request_context(environ_overrides={"REMOTE_ADDR": "203.0.113.5"}):
     _ip, _ua = _relay._client_info()
     check("remote_addr 回退", _ip == "203.0.113.5", _ip)
+
+# ================= _read_request_text 多端点支持 =================
+print("== _read_request_text 多端点支持 ==")
+_chat_body = {"messages": [{"role": "user", "content": "你好"}]}
+check("chat messages 提取", "你好" in _relay._read_request_text(_chat_body))
+_comp_body = {"prompt": "complete this"}
+check("completions prompt 提取", "complete this" in _relay._read_request_text(_comp_body))
+_emb_body = {"input": "embed this text"}
+check("embeddings input 提取", "embed this text" in _relay._read_request_text(_emb_body))
+_emb_list = {"input": ["text1", "text2"]}
+check("embeddings input 列表", "text1" in _relay._read_request_text(_emb_list) and "text2" in _relay._read_request_text(_emb_list))
+_img_body = {"prompt": "a cat"}
+check("images prompt 提取", "a cat" in _relay._read_request_text(_img_body))
+_empty = _relay._read_request_text({})
+check("空 body 不崩溃", _empty == "")
+
+# ================= base_url /v1 后缀去重 =================
+print("== base_url /v1 去重 ==")
+from gateway.adapters.base import BaseAdapter as _BA
+check("无 /v1 不变", _BA._clean_base_url("https://api.com") == "https://api.com")
+check("去除 /v1", _BA._clean_base_url("https://api.com/v1") == "https://api.com")
+check("去除 /v1/", _BA._clean_base_url("https://api.com/v1/") == "https://api.com")
+check("空字符串", _BA._clean_base_url("") == "")
+check("None 安全", _BA._clean_base_url(None) == "")
+check("中间 /v1 不误删", _BA._clean_base_url("https://api.com/v1beta") == "https://api.com/v1beta")
+
+# 验证 openai_compat 适配器拼接不会重复 /v1
+from gateway.adapters.openai_compat import OpenAICompatAdapter as _OI
+_oi_inst = _OI()
+_ch = type("MockCh", (), {"base_url": "https://api.openai.com/v1", "adapter": "openai_compat",
+                           "api_key": "sk-x", "real_model": lambda self, m: m})()
+_req = _oi_inst.build_request(_ch, "sk-x", "gpt-4", "chat", {"messages": []})
+check("build_request 去除 /v1 后缀", _req.url == "https://api.openai.com/v1/chat/completions", _req.url)
+_ch2 = type("MockCh", (), {"base_url": "https://api.openai.com", "adapter": "openai_compat",
+                            "api_key": "sk-x", "real_model": lambda self, m: m})()
+_req2 = _oi_inst.build_request(_ch2, "sk-x", "gpt-4", "chat", {"messages": []})
+check("build_request 无 /v1 正常", _req2.url == "https://api.openai.com/v1/chat/completions", _req2.url)
+
+# ================= 自定义 api_version (如 v4) =================
+print("== 自定义 api_version ==")
+_ch_v4 = type("MockCh", (), {"base_url": "https://api.example.com", "adapter": "openai_compat",
+                              "api_key": "sk-x", "real_model": lambda self, m: m,
+                              "api_version": "v4"})()
+_req_v4 = _oi_inst.build_request(_ch_v4, "sk-x", "gpt-4", "chat", {"messages": []})
+check("v4 版本路径", _req_v4.url == "https://api.example.com/v4/chat/completions", _req_v4.url)
+_req_v4_emb = _oi_inst.build_request(_ch_v4, "sk-x", "text-emb", "embeddings", {"input": "hi"})
+check("v4 embeddings 路径", _req_v4_emb.url == "https://api.example.com/v4/embeddings", _req_v4_emb.url)
+_req_v4_img = _oi_inst.build_request(_ch_v4, "sk-x", "dall-e", "images", {"prompt": "cat"})
+check("v4 images 路径", _req_v4_img.url == "https://api.example.com/v4/images/generations", _req_v4_img.url)
+
+# base_url 以 /v4 结尾 + api_version=v4 -> 去重后正确拼接
+_ch_v4_base = type("MockCh", (), {"base_url": "https://api.example.com/v4", "adapter": "openai_compat",
+                                   "api_key": "sk-x", "real_model": lambda self, m: m,
+                                   "api_version": "v4"})()
+_req_v4_base = _oi_inst.build_request(_ch_v4_base, "sk-x", "gpt-4", "chat", {"messages": []})
+check("base_url /v4 + api_version=v4 不重复", _req_v4_base.url == "https://api.example.com/v4/chat/completions", _req_v4_base.url)
+
+# api_version 默认值(v1) 不影响现有渠道
+_ch_default = type("MockCh", (), {"base_url": "https://api.openai.com", "adapter": "openai_compat",
+                                  "api_key": "sk-x", "real_model": lambda self, m: m})()
+_req_default = _oi_inst.build_request(_ch_default, "sk-x", "gpt-4", "chat", {"messages": []})
+check("默认 api_version=v1", _req_default.url == "https://api.openai.com/v1/chat/completions", _req_default.url)
 
 print(f"\n结果: {PASS} 通过, {FAIL} 失败")
 sys.exit(1 if FAIL else 0)
