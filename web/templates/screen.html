@@ -193,7 +193,7 @@ async function refreshAll() {
         formatter: p => `周${days[p.data[0]]} ${p.data[1]}:00<br/>调用 ${p.data[2]} 次`},
       grid: {left: 34, right: 12, top: 8, bottom: 36, containLabel: true},
       xAxis: {type: 'category', data: days.map(d => '周' + d), ...CHART_AXIS},
-      yAxis: {type: 'category', data: hours, ...CHART_AXIS, inverse: true, axisLabel: {...CHART_TEXT, interval: 3}},
+      yAxis: {type: 'category', data: hours, ...CHART_AXIS, axisLabel: {...CHART_TEXT, interval: 3}},
       visualMap: {min: 0, max: Math.max(1, maxV), orient: 'vertical', right: 0, top: 'center',
         itemWidth: 9, itemHeight: 90, textStyle: CHART_TEXT,
         inRange: {color: ['#0d1630', '#3b82f6', '#00e5ff', '#10e0a0']}},
