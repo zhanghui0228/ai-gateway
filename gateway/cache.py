@@ -73,6 +73,18 @@ def _utc_from_naive(dt):
     return dt
 
 
+def _utc_naive(dt):
+    """aware datetime 转 naive UTC: 仅用于持久层(SQLite 写入/比较)。
+    背景: SQLAlchemy 读回 DateTime 列是 naive, 而 aware 参数绑定时 SQLite 按字面值
+    比较, 两侧时区口径不一致会把"未过期"条目误判为过期(清理误删、warm_up 漏载)。
+    统一: 持久层全用 naive UTC(写入与比较同口径), 内存 LRU 层继续用 aware。"""
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
 # 每种 kind 的默认 TTL(秒)
 _KIND_TTL = {"chat": 300, "completions": 300, "embeddings": 3600}
 # 确定性输出(temperature<=0.1 或确定性 kind)的 TTL(秒): 同输入可安全长缓存
@@ -196,7 +208,7 @@ class ResponseCache:
                     # 过期,移除
                     del self._lru[cache_key]
 
-        # 查 SQLite
+        # 查 SQLite(持久层用 naive UTC 比较, 与 cleanup/warm_up 口径一致)
         row = db.session.get(ResponseCacheEntry, cache_key)
         if row and row.expires_at and _utc_from_naive(row.expires_at) > _now():
             # 加载到内存 LRU
@@ -216,7 +228,7 @@ class ResponseCache:
                 self._note_hit()
             # 异步更新命中统计(不阻塞热路径)
             row.hit_count = (row.hit_count or 0) + 1
-            row.last_hit_at = _now()
+            row.last_hit_at = _utc_naive(_now())
             try:
                 db.session.commit()
             except Exception:
@@ -239,21 +251,23 @@ class ResponseCache:
     def put(self, cache_key: str, kind: str, model: str,
             response_body: str, prompt_tokens: int, completion_tokens: int,
             body: dict = None):
-        """写入非流式缓存: 内存 LRU + SQLite"""
+        """写入非流式缓存: 内存 LRU + SQLite。
+        持久层 expires_at 存 naive UTC(与 _utc_naive 口径一致), 内存层用 aware。"""
         ttl = get_ttl_for(kind, body)
-        expires_at = _now() + timedelta(seconds=ttl)
+        expires_at_aware = _now() + timedelta(seconds=ttl)
 
         entry = _CacheEntry(
             response_body=response_body, chunks=None,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            model=model, kind=kind, expires_at=expires_at)
+            model=model, kind=kind, expires_at=expires_at_aware)
 
         with self._lock:
             self._lru[cache_key] = entry
             self._evict_if_needed()
 
-        # 写 SQLite(持久化)
+        # 写 SQLite(持久化): expires_at 存 naive UTC
+        expires_at_naive = _utc_naive(expires_at_aware)
         try:
             row = db.session.get(ResponseCacheEntry, cache_key)
             if row:
@@ -261,7 +275,7 @@ class ResponseCache:
                 row.chunks = None
                 row.prompt_tokens = prompt_tokens
                 row.completion_tokens = completion_tokens
-                row.expires_at = expires_at
+                row.expires_at = expires_at_naive
                 row.hit_count = 0
                 row.last_hit_at = None
             else:
@@ -269,7 +283,7 @@ class ResponseCache:
                     cache_key=cache_key, kind=kind, model=model,
                     response_body=response_body, chunks=None,
                     prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
-                    expires_at=expires_at, hit_count=0)
+                    expires_at=expires_at_naive, hit_count=0)
                 db.session.add(row)
             db.session.commit()
         except Exception:
@@ -280,30 +294,31 @@ class ResponseCache:
     def put_stream(self, cache_key: str, kind: str, model: str,
                    chunks: list, prompt_tokens: int, completion_tokens: int,
                    body: dict = None):
-        """写入流式缓存: 内存 LRU + SQLite（存储 SSE chunks 数组）"""
+        """写入流式缓存: 内存 LRU + SQLite(存储 SSE chunks 数组)"""
         ttl = get_ttl_for(kind, body)
-        expires_at = _now() + timedelta(seconds=ttl)
+        expires_at_aware = _now() + timedelta(seconds=ttl)
 
         entry = _CacheEntry(
             response_body=None, chunks=chunks,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            model=model, kind=kind, expires_at=expires_at)
+            model=model, kind=kind, expires_at=expires_at_aware)
 
         with self._lock:
             self._lru[cache_key] = entry
             self._evict_if_needed()
 
-        # 写 SQLite(持久化,chunks 存为 JSON)
+        # 写 SQLite(持久化, chunks 存为 JSON): expires_at 存 naive UTC
+        chunks_json = json.dumps(chunks, ensure_ascii=False)
+        expires_at_naive = _utc_naive(expires_at_aware)
         try:
-            chunks_json = json.dumps(chunks, ensure_ascii=False)
             row = db.session.get(ResponseCacheEntry, cache_key)
             if row:
                 row.response_body = ""
                 row.chunks = chunks_json
                 row.prompt_tokens = prompt_tokens
                 row.completion_tokens = completion_tokens
-                row.expires_at = expires_at
+                row.expires_at = expires_at_naive
                 row.hit_count = 0
                 row.last_hit_at = None
             else:
@@ -311,7 +326,7 @@ class ResponseCache:
                     cache_key=cache_key, kind=kind, model=model,
                     response_body="", chunks=chunks_json,
                     prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
-                    expires_at=expires_at, hit_count=0)
+                    expires_at=expires_at_naive, hit_count=0)
                 db.session.add(row)
             db.session.commit()
         except Exception:
@@ -359,17 +374,19 @@ class ResponseCache:
             db.session.rollback()
 
     def cleanup_expired(self):
-        """清理过期条目(SQLite + 内存)"""
-        now = _now()
+        """清理过期条目(SQLite + 内存)。持久层用 naive UTC 比较(与 put/warm_up 口径一致)"""
+        now_naive = _utc_naive(_now())
         with self._lock:
-            expired_keys = [k for k, e in self._lru.items() if now >= e.expires_at]
+            # 内存层用 aware 比较
+            now_aware = _now()
+            expired_keys = [k for k, e in self._lru.items() if now_aware >= e.expires_at]
             for k in expired_keys:
                 del self._lru[k]
         try:
             n = ResponseCacheEntry.query.filter(
-                ResponseCacheEntry.expires_at < now).delete(synchronize_session=False)
-            # 清理超过 7 天的命中事件
-            cutoff = now - timedelta(days=7)
+                ResponseCacheEntry.expires_at < now_naive).delete(synchronize_session=False)
+            # 清理超过 7 天的命中事件(naive UTC)
+            cutoff = now_naive - timedelta(days=7)
             CacheEvent.query.filter(CacheEvent.created_at < cutoff).delete(synchronize_session=False)
             db.session.commit()
             # 同时按容量上限淘汰(防止响应缓存表无界增长)
@@ -380,10 +397,10 @@ class ResponseCache:
             return 0
 
     def warm_up(self):
-        """启动时从 SQLite 加载未过期缓存到内存 LRU"""
-        now = _now()
+        """启动时从 SQLite 加载未过期缓存到内存 LRU(naive UTC 比较)"""
+        now_naive = _utc_naive(_now())
         rows = (ResponseCacheEntry.query
-                .filter(ResponseCacheEntry.expires_at > now)
+                .filter(ResponseCacheEntry.expires_at > now_naive)
                 .order_by(ResponseCacheEntry.hit_count.desc())
                 .limit(_get_max_memory())
                 .all())
@@ -394,7 +411,7 @@ class ResponseCache:
                     response_body=row.response_body, chunks=chunks,
                     prompt_tokens=row.prompt_tokens,
                     completion_tokens=row.completion_tokens,
-                    model=row.model, kind=row.kind, expires_at=row.expires_at)
+                    model=row.model, kind=row.kind, expires_at=_utc_from_naive(row.expires_at))
         return len(rows)
 
     # ---------- 统计 ----------

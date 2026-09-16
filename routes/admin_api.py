@@ -891,12 +891,13 @@ def cache_stats():
         func.coalesce(func.sum(CacheEvent.saved_cost), 0)).scalar()
     st["total_saved_cost"] = round(float(saved or 0), 4)
     # 上游厂商缓存口径:累计提示词缓存读/写 token,与网关响应缓存是两套不同机制
+    # 拆成两次独立单列 scalar() 查询: 多列 query().scalar() 只取首列且类型不稳, 易异常走兜底恒 0
     try:
-        up = db.session.query(
-            func.coalesce(func.sum(UsageLog.cache_read_tokens), 0),
-            func.coalesce(func.sum(UsageLog.cache_creation_tokens), 0)).scalar()
-        st["upstream"] = {"cache_read_tokens": int(up[0] or 0),
-                          "cache_creation_tokens": int(up[1] or 0)}
+        up_read = int((db.session.query(
+            func.coalesce(func.sum(UsageLog.cache_read_tokens), 0)).scalar()) or 0)
+        up_create = int((db.session.query(
+            func.coalesce(func.sum(UsageLog.cache_creation_tokens), 0)).scalar()) or 0)
+        st["upstream"] = {"cache_read_tokens": up_read, "cache_creation_tokens": up_create}
     except Exception:
         st["upstream"] = {"cache_read_tokens": 0, "cache_creation_tokens": 0}
     return jsonify(st)
